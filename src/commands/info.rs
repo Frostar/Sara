@@ -393,7 +393,7 @@ fn render(f: &mut Frame, st: &EditState) {
             lines.push(Line::from(Span::styled(
                 format!("  {file}"),
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(Color::Gray)
                     .add_modifier(Modifier::ITALIC),
             )));
         }
@@ -404,8 +404,8 @@ fn render(f: &mut Frame, st: &EditState) {
         for a in &d.annotations {
             let date = a.entry.with_timezone(&Local).format("%Y-%m-%d %H:%M");
             lines.push(Line::from(vec![
-                Span::styled(format!("  [{}] ", a.id), Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{date}  "), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("  [{}] ", a.id), Style::default().fg(Color::Gray)),
+                Span::styled(format!("{date}  "), Style::default().fg(Color::Gray)),
                 Span::raw(a.text.clone()),
             ]));
         }
@@ -415,18 +415,33 @@ fn render(f: &mut Frame, st: &EditState) {
         lines.push(section("History"));
         for h in &d.history {
             let date = h.changed_at.with_timezone(&Local).format("%Y-%m-%d %H:%M");
+            // Label column: annotations read as "comment", everything else uses
+            // the raw field name.
+            let label = if h.field == "annotation" { "comment" } else { &h.field };
             let mut spans = vec![
-                Span::styled(format!("  {date}  "), Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{:<11} ", h.field), Style::default().fg(Color::Cyan)),
+                Span::styled(format!("  {date}  "), Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:<11} ", label), Style::default().fg(Color::Cyan)),
             ];
             if h.field == "created" {
                 spans.push(Span::raw(h.new_value.clone().unwrap_or_default()));
+            } else if h.field == "annotation" {
+                // Added: only new_value. Removed: only old_value.
+                if let Some(text) = &h.new_value {
+                    spans.push(Span::styled("added: ", Style::default().fg(Color::Green)));
+                    spans.push(Span::raw(text.clone()));
+                } else if let Some(text) = &h.old_value {
+                    spans.push(Span::styled("removed: ", Style::default().fg(Color::Red)));
+                    spans.push(Span::styled(
+                        text.clone(),
+                        Style::default().add_modifier(Modifier::CROSSED_OUT),
+                    ));
+                }
             } else {
                 spans.push(Span::styled(
                     h.old_value.clone().unwrap_or_else(|| "—".into()),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::Gray),
                 ));
-                spans.push(Span::styled(" → ", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(" → ", Style::default().fg(Color::Gray)));
                 spans.push(Span::raw(h.new_value.clone().unwrap_or_else(|| "—".into())));
             }
             lines.push(Line::from(spans));
@@ -474,7 +489,7 @@ fn render(f: &mut Frame, st: &EditState) {
     };
     let footer_idx = chunks.len() - 1;
     f.render_widget(
-        Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(footer).style(Style::default().fg(Color::Gray)),
         chunks[footer_idx],
     );
 }
@@ -492,7 +507,7 @@ fn editable_line<'a>(
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Color::Gray)
     };
 
     // Priority gets a colored value.
@@ -501,7 +516,7 @@ fn editable_line<'a>(
             Some(Priority::H) => Span::styled("High", Style::default().fg(Color::Red)),
             Some(Priority::M) => Span::styled("Medium", Style::default().fg(Color::Yellow)),
             Some(Priority::L) => Span::styled("Low", Style::default().fg(Color::Green)),
-            None => Span::styled("-", Style::default().fg(Color::DarkGray)),
+            None => Span::styled("-", Style::default().fg(Color::Gray)),
         }
     } else if field == EditField::Due {
         due_value_span(task, v)
@@ -531,12 +546,12 @@ fn due_value_span<'a>(task: &Task, fallback: &str) -> Span<'a> {
             Style::default().fg(color),
         )
     } else {
-        Span::styled(fallback.to_string(), Style::default().fg(Color::DarkGray))
+        Span::styled(fallback.to_string(), Style::default().fg(Color::Gray))
     }
 }
 
 fn key_span(k: &str) -> Span<'static> {
-    Span::styled(format!("  {:<12}", k), Style::default().fg(Color::DarkGray))
+    Span::styled(format!("  {:<12}", k), Style::default().fg(Color::Gray))
 }
 
 fn field_line<'a>(k: &str, v: &str) -> Line<'a> {
@@ -597,6 +612,12 @@ fn print_plain(d: &Detail) {
         let date = h.changed_at.with_timezone(&Local).format("%Y-%m-%d %H:%M");
         let change = if h.field == "created" {
             h.new_value.clone().unwrap_or_default()
+        } else if h.field == "annotation" {
+            match (&h.new_value, &h.old_value) {
+                (Some(text), _) => format!("comment added: {text}"),
+                (None, Some(text)) => format!("comment removed: {text}"),
+                _ => "comment".to_string(),
+            }
         } else {
             format!(
                 "{}: {} -> {}",

@@ -341,6 +341,28 @@ fn non_empty(s: &str) -> Option<String> {
     }
 }
 
+/// Append a single history row for a task.
+fn record_history(
+    conn: &Connection,
+    task_uuid: &Uuid,
+    field: &str,
+    old_value: Option<&str>,
+    new_value: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO task_history (task_uuid, field, old_value, new_value, changed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            task_uuid.to_string(),
+            field,
+            old_value,
+            new_value,
+            dt_to_str(&Utc::now())
+        ],
+    )?;
+    Ok(())
+}
+
 /// Record one history row per tracked field that changed between revisions.
 fn record_changes(conn: &Connection, old: &Task, new: &Task) -> Result<()> {
     let olds = tracked_field_values(old);
@@ -524,6 +546,7 @@ pub fn add_annotation(conn: &Connection, task_uuid: &Uuid, text: &str) -> Result
         "INSERT INTO annotations (task_uuid, text, entry) VALUES (?1,?2,?3)",
         params![task_uuid.to_string(), text, dt_to_str(&Utc::now())],
     )?;
+    record_history(conn, task_uuid, "annotation", None, Some(text))?;
     Ok(())
 }
 
@@ -546,7 +569,23 @@ pub fn get_annotations(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<Annota
 }
 
 pub fn delete_annotation(conn: &Connection, ann_id: i64) -> Result<bool> {
+    // Capture the text + owning task before deletion so we can log the event.
+    let existing: Option<(String, String)> = conn
+        .query_row(
+            "SELECT task_uuid, text FROM annotations WHERE id=?1",
+            [ann_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .ok();
+
     let n = conn.execute("DELETE FROM annotations WHERE id=?1", [ann_id])?;
+    if n > 0 {
+        if let Some((uuid_str, text)) = existing {
+            if let Ok(uuid) = Uuid::parse_str(&uuid_str) {
+                record_history(conn, &uuid, "annotation", Some(&text), None)?;
+            }
+        }
+    }
     Ok(n > 0)
 }
 
@@ -770,6 +809,38 @@ mod tests {
             .collect();
         assert_eq!(manual.len(), 2);
         assert_eq!(suggested, vec!["src/llm/mod.rs".to_string()]);
+    }
+
+    #[test]
+    fn adding_annotation_records_a_history_event() {
+        let conn = mem();
+        let task = seed_task(&conn);
+        add_annotation(&conn, &task.uuid, "This is a test comment").unwrap();
+
+        let history = get_history(&conn, &task.uuid).unwrap();
+        let ann: Vec<_> = history.iter().filter(|h| h.field == "annotation").collect();
+        assert_eq!(ann.len(), 1);
+        assert_eq!(ann[0].new_value.as_deref(), Some("This is a test comment"));
+        assert!(ann[0].old_value.is_none());
+    }
+
+    #[test]
+    fn deleting_annotation_records_a_removal_event() {
+        let conn = mem();
+        let task = seed_task(&conn);
+        add_annotation(&conn, &task.uuid, "temp note").unwrap();
+        let anns = get_annotations(&conn, &task.uuid).unwrap();
+        assert_eq!(anns.len(), 1);
+
+        delete_annotation(&conn, anns[0].id).unwrap();
+
+        let history = get_history(&conn, &task.uuid).unwrap();
+        let removals: Vec<_> = history
+            .iter()
+            .filter(|h| h.field == "annotation" && h.new_value.is_none())
+            .collect();
+        assert_eq!(removals.len(), 1);
+        assert_eq!(removals[0].old_value.as_deref(), Some("temp note"));
     }
 
     #[test]
