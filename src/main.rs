@@ -28,6 +28,7 @@ fn run() -> Result<()> {
     } else if args.len() >= 3 && args[1].parse::<i64>().is_ok() {
         const ACTIONS: &[&str] = &[
             "start", "stop", "done", "delete", "modify", "info", "dep", "annotate", "attach",
+            "link",
         ];
         if ACTIONS.contains(&args[2].as_str()) {
             let id = args.remove(1); // remove id
@@ -36,9 +37,17 @@ fn run() -> Result<()> {
             args.insert(2, id);
         }
     }
+    // Human-readable label for the command, captured before clap consumes args.
+    let command_label = args[1..].join(" ");
     let cli = Cli::parse_from(args);
     let cfg = config::load()?;
     let conn = db::open()?;
+
+    // Snapshot task writes so this invocation can be reverted later. `undo`
+    // itself is excluded so it never records (or undoes) its own work.
+    if !matches!(cli.command, Command::Undo) {
+        db::begin_undo_batch(&command_label);
+    }
 
     match cli.command {
         Command::Init { name, goal, yes, no_llm } => {
@@ -81,6 +90,14 @@ fn run() -> Result<()> {
             commands::annotate::attach(&conn, &id, &path)?;
         }
 
+        Command::Link { id, url, label } => {
+            commands::annotate::link(&conn, &id, &url, label.as_deref())?;
+        }
+
+        Command::Unlink { link_id } => {
+            commands::annotate::unlink(&conn, link_id)?;
+        }
+
         Command::List { all, project } => {
             commands::list::run(&conn, &cfg, all, project.as_deref())?;
         }
@@ -116,6 +133,10 @@ fn run() -> Result<()> {
                 commands::dep::run_list(&conn, &id)?;
             }
         },
+
+        Command::Undo => {
+            commands::undo::run(&conn)?;
+        }
 
         Command::Paths => {
             let cfg_path = config::config_path()?;

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use rusqlite_migration::{Migrations, M};
 
 use crate::config;
@@ -100,6 +100,31 @@ fn apply_migrations(conn: &mut Connection) -> Result<()> {
             CREATE INDEX IF NOT EXISTS idx_task_history_task
                 ON task_history(task_uuid, changed_at);",
         ),
+        M::up(
+            "CREATE TABLE IF NOT EXISTS task_links (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_uuid TEXT NOT NULL,
+                url       TEXT NOT NULL,
+                label     TEXT,
+                entry     TEXT NOT NULL,
+                FOREIGN KEY (task_uuid) REFERENCES tasks(uuid) ON DELETE CASCADE
+            );",
+        ),
+        M::up(
+            // Records full task snapshots so the most recent command can be reverted.
+            // before_json is NULL when the task was newly created (undo = remove it);
+            // rows from a single CLI invocation share a batch_id.
+            "CREATE TABLE IF NOT EXISTS undo_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id    TEXT NOT NULL,
+                command     TEXT NOT NULL,
+                task_uuid   TEXT NOT NULL,
+                before_json TEXT,
+                after_json  TEXT,
+                created_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_undo_log_batch ON undo_log(batch_id);",
+        ),
     ]);
     migrations
         .to_latest(conn)
@@ -169,6 +194,158 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
 const TASK_COLUMNS: &str =
     "uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent";
 
+// ── undo ─────────────────────────────────────────────────────────────────────
+
+struct UndoCtx {
+    batch_id: String,
+    command: String,
+}
+
+thread_local! {
+    /// Active undo batch for the current process/thread. When set, every task
+    /// write records a snapshot so the whole command can later be reverted.
+    static UNDO_CTX: std::cell::RefCell<Option<UndoCtx>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Open an undo batch for the current command (e.g. "done 3"). All task writes
+/// until process exit are grouped under one batch that `undo` reverts together.
+pub fn begin_undo_batch(command: &str) {
+    UNDO_CTX.with(|c| {
+        *c.borrow_mut() = Some(UndoCtx {
+            batch_id: Uuid::new_v4().to_string(),
+            command: command.to_string(),
+        });
+    });
+}
+
+/// Record a single task snapshot into the active batch (no-op if none is open).
+fn log_undo(
+    conn: &Connection,
+    task_uuid: &Uuid,
+    before: Option<&Task>,
+    after: Option<&Task>,
+) -> Result<()> {
+    let entry = UNDO_CTX.with(|c| {
+        c.borrow().as_ref().map(|ctx| {
+            (ctx.batch_id.clone(), ctx.command.clone())
+        })
+    });
+    let Some((batch_id, command)) = entry else {
+        return Ok(());
+    };
+    let before_json = before.map(serde_json::to_string).transpose()?;
+    let after_json = after.map(serde_json::to_string).transpose()?;
+    conn.execute(
+        "INSERT INTO undo_log (batch_id, command, task_uuid, before_json, after_json, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6)",
+        params![
+            batch_id,
+            command,
+            task_uuid.to_string(),
+            before_json,
+            after_json,
+            dt_to_str(&Utc::now()),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Restore a task row to a previous snapshot. Uses UPDATE (never REPLACE) so
+/// dependent rows in other tables keyed by uuid are preserved.
+fn restore_task_row(conn: &Connection, t: &Task) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE tasks SET id=?1, description=?2, project=?3, status=?4, priority=?5, due=?6,
+                          entry=?7, modified=?8, end=?9, tags_json=?10, urgency=?11,
+                          started_at=?12, time_spent=?13
+         WHERE uuid=?14",
+        params![
+            t.id,
+            t.description,
+            t.project,
+            t.status.to_string(),
+            t.priority.as_ref().map(|p| p.label()),
+            t.due.as_ref().map(dt_to_str),
+            dt_to_str(&t.entry),
+            dt_to_str(&t.modified),
+            t.end.as_ref().map(dt_to_str),
+            serde_json::to_string(&t.tags).unwrap_or_else(|_| "[]".into()),
+            t.urgency,
+            t.started_at.as_ref().map(dt_to_str),
+            t.time_spent,
+            t.uuid.to_string(),
+        ],
+    )?;
+    if n == 0 {
+        conn.execute(
+            "INSERT INTO tasks (uuid, id, description, project, status, priority, due,
+                                entry, modified, end, tags_json, urgency, started_at, time_spent)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            params![
+                t.uuid.to_string(),
+                t.id,
+                t.description,
+                t.project,
+                t.status.to_string(),
+                t.priority.as_ref().map(|p| p.label()),
+                t.due.as_ref().map(dt_to_str),
+                dt_to_str(&t.entry),
+                dt_to_str(&t.modified),
+                t.end.as_ref().map(dt_to_str),
+                serde_json::to_string(&t.tags).unwrap_or_else(|_| "[]".into()),
+                t.urgency,
+                t.started_at.as_ref().map(dt_to_str),
+                t.time_spent,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Revert the most recent recorded command. Returns the command label that was
+/// undone, or None when there is nothing to undo.
+pub fn undo(conn: &Connection) -> Result<Option<String>> {
+    let latest: Option<(String, String)> = conn
+        .query_row(
+            "SELECT batch_id, command FROM undo_log ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((batch_id, command)) = latest else {
+        return Ok(None);
+    };
+
+    // Reverse the writes newest-first within the batch.
+    let entries: Vec<(Option<String>, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT before_json, task_uuid FROM undo_log WHERE batch_id=?1 ORDER BY id DESC",
+        )?;
+        stmt.query_map([&batch_id], |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    for (before_json, task_uuid) in entries {
+        match before_json {
+            // Task existed before: restore that snapshot.
+            Some(json) => {
+                let task: Task = serde_json::from_str(&json)
+                    .context("Failed to decode undo snapshot")?;
+                restore_task_row(conn, &task)?;
+            }
+            // Task was created by this command: removing it (and cascaded rows) undoes it.
+            None => {
+                conn.execute("DELETE FROM tasks WHERE uuid=?1", [&task_uuid])?;
+            }
+        }
+    }
+
+    conn.execute("DELETE FROM undo_log WHERE batch_id=?1", [&batch_id])?;
+    repack_ids(conn)?;
+    Ok(Some(command))
+}
+
 // ── task CRUD ────────────────────────────────────────────────────────────────
 
 pub fn next_display_id(conn: &Connection) -> Result<i64> {
@@ -224,6 +401,7 @@ pub fn insert_task(conn: &Connection, task: &mut Task) -> Result<()> {
             dt_to_str(&task.entry),
         ],
     )?;
+    log_undo(conn, &task.uuid, None, Some(task))?;
     Ok(())
 }
 
@@ -301,6 +479,7 @@ pub fn update_task(conn: &Connection, task: &Task) -> Result<()> {
         ],
     )?;
     if let Some(prev) = prev {
+        log_undo(conn, &task.uuid, Some(&prev), Some(task))?;
         record_changes(conn, &prev, task)?;
     }
     Ok(())
@@ -589,6 +768,122 @@ pub fn delete_annotation(conn: &Connection, ann_id: i64) -> Result<bool> {
     Ok(n > 0)
 }
 
+// ── links ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct Link {
+    pub id: i64,
+    pub url: String,
+    pub label: Option<String>,
+    pub entry: DateTime<Utc>,
+}
+
+impl Link {
+    /// A human-friendly display string (explicit label, else derived from URL).
+    pub fn display(&self) -> String {
+        self.label
+            .clone()
+            .or_else(|| derive_link_label(&self.url))
+            .unwrap_or_else(|| self.url.clone())
+    }
+}
+
+/// Heuristic: does this string look like a web URL rather than a file path?
+pub fn is_url(s: &str) -> bool {
+    let s = s.trim();
+    s.starts_with("http://")
+        || s.starts_with("https://")
+        || s.contains("://")
+        || s.starts_with("www.")
+}
+
+/// Derive a nice label from common URLs (e.g. GitHub PRs/issues).
+/// Returns None when no special pattern applies.
+pub fn derive_link_label(url: &str) -> Option<String> {
+    // https://github.com/<owner>/<repo>/pull/<n>  or  /issues/<n>
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("github.com/"))?;
+    let parts: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() >= 4 {
+        let owner = parts[0];
+        let repo = parts[1];
+        let kind = parts[2];
+        let num = parts[3].split(|c: char| !c.is_ascii_digit()).next().unwrap_or("");
+        let tag = match kind {
+            "pull" => Some("PR"),
+            "issues" => Some("Issue"),
+            _ => None,
+        };
+        if let (Some(tag), false) = (tag, num.is_empty()) {
+            return Some(format!("{tag} #{num} · {owner}/{repo}"));
+        }
+    }
+    None
+}
+
+pub fn add_link(conn: &Connection, task_uuid: &Uuid, url: &str, label: Option<&str>) -> Result<()> {
+    conn.execute(
+        "INSERT INTO task_links (task_uuid, url, label, entry) VALUES (?1,?2,?3,?4)",
+        params![task_uuid.to_string(), url, label, dt_to_str(&Utc::now())],
+    )?;
+    let display = label
+        .map(|s| s.to_string())
+        .or_else(|| derive_link_label(url))
+        .unwrap_or_else(|| url.to_string());
+    record_history(conn, task_uuid, "link", None, Some(&display))?;
+    Ok(())
+}
+
+pub fn get_links(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<Link>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, url, label, entry FROM task_links WHERE task_uuid=?1 ORDER BY entry ASC",
+    )?;
+    let links = stmt
+        .query_map([task_uuid.to_string()], |row| {
+            let entry_str: String = row.get(3)?;
+            Ok(Link {
+                id: row.get(0)?,
+                url: row.get(1)?,
+                label: row.get(2)?,
+                entry: str_to_dt(&entry_str).unwrap_or_else(|_| Utc::now()),
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(links)
+}
+
+pub fn delete_link(conn: &Connection, link_id: i64) -> Result<bool> {
+    let existing: Option<(String, String, Option<String>)> = conn
+        .query_row(
+            "SELECT task_uuid, url, label FROM task_links WHERE id=?1",
+            [link_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .ok();
+
+    let n = conn.execute("DELETE FROM task_links WHERE id=?1", [link_id])?;
+    if n > 0 {
+        if let Some((uuid_str, url, label)) = existing {
+            if let Ok(uuid) = Uuid::parse_str(&uuid_str) {
+                let display = label
+                    .or_else(|| derive_link_label(&url))
+                    .unwrap_or(url);
+                record_history(conn, &uuid, "link", Some(&display), None)?;
+            }
+        }
+    }
+    Ok(n > 0)
+}
+
 // ── history ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -841,6 +1136,129 @@ mod tests {
             .collect();
         assert_eq!(removals.len(), 1);
         assert_eq!(removals[0].old_value.as_deref(), Some("temp note"));
+    }
+
+    #[test]
+    fn github_pr_url_gets_nice_label() {
+        assert_eq!(
+            derive_link_label("https://github.com/acme/widgets/pull/42"),
+            Some("PR #42 · acme/widgets".to_string())
+        );
+        assert_eq!(
+            derive_link_label("https://github.com/acme/widgets/issues/7"),
+            Some("Issue #7 · acme/widgets".to_string())
+        );
+        assert_eq!(derive_link_label("https://example.com/foo"), None);
+    }
+
+    #[test]
+    fn is_url_detects_links_vs_paths() {
+        assert!(is_url("https://github.com/a/b/pull/1"));
+        assert!(is_url("http://example.com"));
+        assert!(is_url("www.test.dk"));
+        assert!(!is_url("src/main.rs"));
+        assert!(!is_url("Cargo.toml"));
+    }
+
+    #[test]
+    fn add_and_get_links_with_history() {
+        let conn = mem();
+        let task = seed_task(&conn);
+        add_link(&conn, &task.uuid, "https://github.com/acme/widgets/pull/42", None).unwrap();
+        let links = get_links(&conn, &task.uuid).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].display(), "PR #42 · acme/widgets");
+
+        // History event recorded for the added link.
+        let history = get_history(&conn, &task.uuid).unwrap();
+        assert!(history.iter().any(|h| h.field == "link"
+            && h.new_value.as_deref() == Some("PR #42 · acme/widgets")));
+    }
+
+    #[test]
+    fn delete_link_records_removal_history() {
+        let conn = mem();
+        let task = seed_task(&conn);
+        add_link(&conn, &task.uuid, "https://example.com/x", Some("My link")).unwrap();
+        let links = get_links(&conn, &task.uuid).unwrap();
+        assert!(delete_link(&conn, links[0].id).unwrap());
+        assert!(get_links(&conn, &task.uuid).unwrap().is_empty());
+
+        let history = get_history(&conn, &task.uuid).unwrap();
+        assert!(history
+            .iter()
+            .any(|h| h.field == "link" && h.old_value.as_deref() == Some("My link")));
+    }
+
+    #[test]
+    fn undo_reverts_a_completed_task_to_pending() {
+        let conn = mem();
+        let mut task = seed_task(&conn);
+
+        begin_undo_batch("done 1");
+        task.status = Status::Completed;
+        task.end = Some(Utc::now());
+        task.modified = Utc::now();
+        update_task(&conn, &task).unwrap();
+
+        // Task is now completed and no longer pending.
+        assert!(get_task_by_id(&conn, 1).unwrap().is_none());
+
+        let undone = undo(&conn).unwrap();
+        assert_eq!(undone.as_deref(), Some("done 1"));
+
+        let restored = get_task_by_uuid_prefix(&conn, &task.uuid.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.status, Status::Pending);
+        assert!(restored.end.is_none());
+    }
+
+    #[test]
+    fn undo_removes_a_newly_added_task() {
+        let conn = mem();
+        begin_undo_batch("add demo");
+        let mut task = Task::new("demo".into(), "tk".into());
+        insert_task(&conn, &mut task).unwrap();
+        assert!(get_task_by_uuid_prefix(&conn, &task.uuid.to_string())
+            .unwrap()
+            .is_some());
+
+        let undone = undo(&conn).unwrap();
+        assert_eq!(undone.as_deref(), Some("add demo"));
+        assert!(get_task_by_uuid_prefix(&conn, &task.uuid.to_string())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn undo_with_empty_log_returns_none() {
+        let conn = mem();
+        assert!(undo(&conn).unwrap().is_none());
+    }
+
+    #[test]
+    fn undo_only_reverts_the_latest_command() {
+        let conn = mem();
+        let mut task = seed_task(&conn);
+
+        begin_undo_batch("modify 1");
+        task.description = "first edit".into();
+        task.modified = Utc::now();
+        update_task(&conn, &task).unwrap();
+
+        begin_undo_batch("modify 1 again");
+        task.description = "second edit".into();
+        task.modified = Utc::now();
+        update_task(&conn, &task).unwrap();
+
+        undo(&conn).unwrap();
+        let after_first_undo = get_task_by_id(&conn, 1).unwrap().unwrap();
+        assert_eq!(after_first_undo.description, "first edit");
+
+        undo(&conn).unwrap();
+        let after_second_undo = get_task_by_id(&conn, 1).unwrap().unwrap();
+        assert_eq!(after_second_undo.description, "demo");
     }
 
     #[test]

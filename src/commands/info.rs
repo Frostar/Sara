@@ -4,7 +4,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     Frame, Terminal,
     backend::Backend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
@@ -25,8 +25,11 @@ struct Detail {
     manual_files: Vec<String>,
     /// Files proposed by the LLM.
     suggested_files: Vec<String>,
+    links: Vec<crate::db::Link>,
     annotations: Vec<crate::db::Annotation>,
     history: Vec<crate::db::HistoryEntry>,
+    /// Absolute project root, used to open relative file paths.
+    project_root: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -58,6 +61,89 @@ impl EditField {
     }
 }
 
+/// Something the cursor can land on in the detail view.
+#[derive(Clone, PartialEq)]
+enum Focusable {
+    Field(EditField),
+    File(String),
+    Link(usize),
+}
+
+/// Ordered list of focusable items: editable fields, then links, then files.
+/// (Matches the on-screen order so arrow-key navigation feels natural.)
+fn focusables(d: &Detail) -> Vec<Focusable> {
+    let mut v: Vec<Focusable> = EDIT_FIELDS.iter().map(|f| Focusable::Field(*f)).collect();
+    for i in 0..d.links.len() {
+        v.push(Focusable::Link(i));
+    }
+    for f in d.manual_files.iter().chain(d.suggested_files.iter()) {
+        v.push(Focusable::File(f.clone()));
+    }
+    v
+}
+
+/// Open a URL in the OS default browser (non-blocking). Adds a scheme for
+/// bare `www.` style links.
+fn open_url(raw: &str) {
+    let url = if raw.starts_with("www.") {
+        format!("https://{raw}")
+    } else {
+        raw.to_string()
+    };
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(cmd)
+        .arg(&url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// Pick the user's terminal editor: $VISUAL, then $EDITOR, then the first of
+/// nvim/vim/nano that exists on PATH.
+fn editor_command() -> String {
+    if let Ok(v) = std::env::var("VISUAL") {
+        if !v.trim().is_empty() {
+            return v;
+        }
+    }
+    if let Ok(v) = std::env::var("EDITOR") {
+        if !v.trim().is_empty() {
+            return v;
+        }
+    }
+    for candidate in ["nvim", "vim", "nano", "vi"] {
+        if std::process::Command::new("which")
+            .arg(candidate)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return candidate.to_string();
+        }
+    }
+    "vi".to_string()
+}
+
+/// Launch the editor on `path`, inheriting stdio so it takes over the terminal.
+/// The caller is responsible for suspending/resuming the TUI around this.
+fn open_in_editor(path: &std::path::Path) -> std::io::Result<()> {
+    // $EDITOR may contain args (e.g. "code -w"); split on whitespace.
+    let editor = editor_command();
+    let mut parts = editor.split_whitespace();
+    let bin = parts.next().unwrap_or("vi");
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(parts).arg(path);
+    cmd.status().map(|_| ())
+}
+
 fn load_detail(conn: &Connection, task: Task) -> Result<Detail> {
     let resolve_ids = |uuids: Vec<uuid::Uuid>| -> Vec<String> {
         uuids
@@ -82,13 +168,19 @@ fn load_detail(conn: &Connection, task: Task) -> Result<Detail> {
         }
     }
 
+    let project_root = db::get_project(conn, &task.project)?
+        .and_then(|p| p.path)
+        .map(std::path::PathBuf::from);
+
     Ok(Detail {
         blocked_by: resolve_ids(db::get_blockers(conn, &task.uuid)?),
         blocking: resolve_ids(db::get_blocking(conn, &task.uuid)?),
         manual_files,
         suggested_files,
+        links: db::get_links(conn, &task.uuid)?,
         annotations: db::get_annotations(conn, &task.uuid)?,
         history: db::get_history(conn, &task.uuid)?,
+        project_root,
         task,
     })
 }
@@ -147,18 +239,30 @@ fn edit_loop<B: Backend>(
             continue;
         }
 
+        let items = focusables(&st.detail);
+        // Keep the cursor in range (links/files can disappear after a reload).
+        if !items.is_empty() && st.selected >= items.len() {
+            st.selected = items.len() - 1;
+        }
+        let current = items.get(st.selected).cloned();
+        let current_field = match &current {
+            Some(Focusable::Field(f)) => Some(*f),
+            _ => None,
+        };
+
         if st.editing {
+            let field = current_field.unwrap_or(EditField::Description);
             match key.code {
                 KeyCode::Enter => {
                     let value = st.editor.lines().join("");
-                    if EDIT_FIELDS[st.selected] == EditField::Due
+                    if field == EditField::Due
                         && !value.trim().is_empty()
                         && !crate::dates::is_valid_due(&value)
                     {
                         st.due_error = true;
                         continue;
                     }
-                    apply_field(&mut st.detail.task, EDIT_FIELDS[st.selected], &value, cfg);
+                    apply_field(&mut st.detail.task, field, &value, cfg);
                     save(conn, cfg, &mut st.detail)?;
                     st.editing = false;
                     st.due_error = false;
@@ -169,7 +273,7 @@ fn edit_loop<B: Backend>(
                 }
                 _ => {
                     st.editor.input(key);
-                    if EDIT_FIELDS[st.selected] == EditField::Due {
+                    if field == EditField::Due {
                         let v = st.editor.lines().join("");
                         st.due_error = !v.trim().is_empty() && !crate::dates::is_valid_due(&v);
                     }
@@ -179,31 +283,58 @@ fn edit_loop<B: Backend>(
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Down | KeyCode::Char('j') => {
-                    st.selected = (st.selected + 1).min(EDIT_FIELDS.len() - 1);
+                    if !items.is_empty() {
+                        st.selected = (st.selected + 1).min(items.len() - 1);
+                    }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     st.selected = st.selected.saturating_sub(1);
                 }
                 KeyCode::PageDown => st.scroll = st.scroll.saturating_add(5),
                 KeyCode::PageUp => st.scroll = st.scroll.saturating_sub(5),
-                KeyCode::Left if EDIT_FIELDS[st.selected] == EditField::Priority => {
+                KeyCode::Left if current_field == Some(EditField::Priority) => {
                     cycle_priority(&mut st.detail.task, false);
                     save(conn, cfg, &mut st.detail)?;
                 }
-                KeyCode::Right if EDIT_FIELDS[st.selected] == EditField::Priority => {
+                KeyCode::Right if current_field == Some(EditField::Priority) => {
                     cycle_priority(&mut st.detail.task, true);
                     save(conn, cfg, &mut st.detail)?;
                 }
-                KeyCode::Enter | KeyCode::Char('e') => match EDIT_FIELDS[st.selected] {
-                    EditField::Priority => {
+                KeyCode::Enter | KeyCode::Char('e') => match current {
+                    Some(Focusable::Field(EditField::Priority)) => {
                         cycle_priority(&mut st.detail.task, true);
                         save(conn, cfg, &mut st.detail)?;
                     }
-                    field => {
+                    Some(Focusable::Field(field)) => {
                         st.editor = editor_for(&st.detail.task, field);
                         st.editing = true;
                         st.due_error = false;
                     }
+                    Some(Focusable::Link(i)) => {
+                        if let Some(link) = st.detail.links.get(i) {
+                            open_url(&link.url);
+                        }
+                    }
+                    Some(Focusable::File(path)) => {
+                        if db::is_url(&path) {
+                            // URL stored as a file (legacy attach) -> browser.
+                            open_url(&path);
+                        } else {
+                            // Real file -> open in the user's editor. Hand the
+                            // terminal back while the editor runs.
+                            let target = st
+                                .detail
+                                .project_root
+                                .as_ref()
+                                .map(|r| r.join(&path))
+                                .unwrap_or_else(|| std::path::PathBuf::from(&path));
+                            tui::suspend()?;
+                            let _ = open_in_editor(&target);
+                            tui::resume()?;
+                            terminal.clear()?;
+                        }
+                    }
+                    None => {}
                 },
                 _ => {}
             }
@@ -376,26 +507,51 @@ fn render(f: &mut Frame, st: &EditState) {
             lines.push(Line::from(format!("  {b}")));
         }
     }
+    // Selected focusable (for highlighting files/links). Fields are handled
+    // inline above via their index.
+    let items = focusables(d);
+    let sel = if st.editing { None } else { items.get(st.selected).cloned() };
+    let file_selected = |path: &str| sel == Some(Focusable::File(path.to_string()));
+
+    if !d.links.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(section("Links  (Enter to open)"));
+        for (i, link) in d.links.iter().enumerate() {
+            let selected = sel == Some(Focusable::Link(i));
+            let marker = if selected { "› " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(Color::Blue).add_modifier(Modifier::UNDERLINED)
+            };
+            let mut spans = vec![
+                Span::styled(format!("{marker}[{}] ", link.id), Style::default().fg(Color::Gray)),
+                Span::styled(link.display(), style),
+            ];
+            // Show the raw URL too when a label was derived/added.
+            if link.display() != link.url {
+                spans.push(Span::styled(
+                    format!("  {}", link.url),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+    }
     if !d.manual_files.is_empty() {
         lines.push(Line::from(""));
         lines.push(section("Relevant files"));
         for file in &d.manual_files {
-            lines.push(Line::from(Span::styled(
-                format!("  {file}"),
-                Style::default().fg(Color::Cyan),
-            )));
+            lines.push(nav_line(file, Color::Cyan, false, file_selected(file)));
         }
     }
     if !d.suggested_files.is_empty() {
         lines.push(Line::from(""));
         lines.push(section("Possible relevant files (suggested by AI)"));
         for file in &d.suggested_files {
-            lines.push(Line::from(Span::styled(
-                format!("  {file}"),
-                Style::default()
-                    .fg(Color::Gray)
-                    .add_modifier(Modifier::ITALIC),
-            )));
+            lines.push(nav_line(file, Color::Gray, true, file_selected(file)));
         }
     }
     if !d.annotations.is_empty() {
@@ -461,7 +617,7 @@ fn render(f: &mut Frame, st: &EditState) {
 
     // ── Edit bar
     if st.editing {
-        let field = EDIT_FIELDS[st.selected];
+        let field = EDIT_FIELDS.get(st.selected).copied().unwrap_or(EditField::Description);
         let (title, border) = if st.due_error {
             (
                 format!(" Editing {} — invalid date ", field.label()),
@@ -485,13 +641,29 @@ fn render(f: &mut Frame, st: &EditState) {
     let footer = if st.editing {
         " type to edit  •  Enter confirm  •  Esc cancel ".to_string()
     } else {
-        " ↑/↓ select field  •  Enter/e edit  •  ←/→ change priority  •  PgUp/PgDn scroll  •  q close ".to_string()
+        " ↑/↓ move  •  Enter edit field / open file·link  •  ←/→ priority  •  PgUp/PgDn scroll  •  q close ".to_string()
     };
     let footer_idx = chunks.len() - 1;
     f.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::Gray)),
         chunks[footer_idx],
     );
+}
+
+/// A selectable file/link row with a `›` marker when focused.
+fn nav_line<'a>(text: &str, color: Color, italic: bool, selected: bool) -> Line<'a> {
+    let marker = if selected { "› " } else { "  " };
+    let mut style = Style::default().fg(color);
+    if italic {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if selected {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    Line::from(vec![
+        Span::styled(marker.to_string(), Style::default().fg(Color::Gray)),
+        Span::styled(text.to_string(), style),
+    ])
 }
 
 fn editable_line<'a>(
@@ -597,6 +769,9 @@ fn print_plain(d: &Detail) {
     }
     for b in &d.blocking {
         println!("{:<14}{}", "Blocking", b);
+    }
+    for link in &d.links {
+        println!("{:<14}[{}] {}  {}", "Link", link.id, link.display(), link.url);
     }
     for file in &d.manual_files {
         println!("{:<14}{}", "File", file);

@@ -72,12 +72,29 @@ pub enum Command {
         annotation_id: i64,
     },
 
-    /// Attach a file path or URL to a task
+    /// Attach a file path or URL to a task (URLs become links)
     Attach {
         /// Task id or uuid prefix
         id: String,
         /// File path (relative to project) or URL
         path: String,
+    },
+
+    /// Add a link (e.g. a GitHub PR) to a task
+    Link {
+        /// Task id or uuid prefix
+        id: String,
+        /// The URL to link
+        url: String,
+        /// Optional display label (auto-derived for GitHub PRs/issues)
+        #[arg(long)]
+        label: Option<String>,
+    },
+
+    /// Remove a link by its number (see `tk info`)
+    Unlink {
+        /// Link id (the number shown in the detail view)
+        link_id: i64,
     },
 
     /// List tasks
@@ -136,6 +153,9 @@ pub enum Command {
         #[command(subcommand)]
         action: DepAction,
     },
+
+    /// Revert the most recent command
+    Undo,
 
     /// Print config and data directory paths
     Paths,
