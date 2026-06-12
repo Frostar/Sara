@@ -30,6 +30,17 @@ struct Detail {
     history: Vec<crate::db::HistoryEntry>,
     /// Absolute project root, used to open relative file paths.
     project_root: Option<std::path::PathBuf>,
+    /// Persisted branch snapshot (set via `tk addbranch`, populated on `tk stop`).
+    branch: Option<crate::db::BranchRecord>,
+    /// Tasks in the same project whose snapshot files overlap with this task's.
+    overlaps: Vec<BranchOverlap>,
+}
+
+struct BranchOverlap {
+    id: i64,
+    description: String,
+    branch: String,
+    shared_files: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -172,6 +183,10 @@ fn load_detail(conn: &Connection, task: Task) -> Result<Detail> {
         .and_then(|p| p.path)
         .map(std::path::PathBuf::from);
 
+    // Branch snapshot and overlap detection (pure stored-data, no live git).
+    let branch = db::get_task_branch(conn, &task.uuid);
+    let overlaps = compute_overlaps(conn, &task, &branch);
+
     Ok(Detail {
         blocked_by: resolve_ids(db::get_blockers(conn, &task.uuid)?),
         blocking: resolve_ids(db::get_blocking(conn, &task.uuid)?),
@@ -181,8 +196,49 @@ fn load_detail(conn: &Connection, task: Task) -> Result<Detail> {
         annotations: db::get_annotations(conn, &task.uuid)?,
         history: db::get_history(conn, &task.uuid)?,
         project_root,
+        branch,
+        overlaps,
         task,
     })
+}
+
+fn compute_overlaps(
+    conn: &Connection,
+    task: &Task,
+    branch_rec: &Option<db::BranchRecord>,
+) -> Vec<BranchOverlap> {
+    let my_files: std::collections::HashSet<String> = branch_rec
+        .as_ref()
+        .and_then(|b| b.files.as_ref())
+        .map(|fs| fs.iter().cloned().collect())
+        .unwrap_or_default();
+
+    if my_files.is_empty() {
+        return vec![];
+    }
+
+    let others = db::branched_pending_in_project(conn, &task.project, &task.uuid)
+        .unwrap_or_default();
+
+    let mut result = vec![];
+    for (id, desc, other_rec) in others {
+        let other_files: std::collections::HashSet<String> = other_rec
+            .files
+            .as_ref()
+            .map(|fs| fs.iter().cloned().collect())
+            .unwrap_or_default();
+        let mut shared: Vec<String> = my_files.intersection(&other_files).cloned().collect();
+        if !shared.is_empty() {
+            shared.sort();
+            result.push(BranchOverlap {
+                id,
+                description: desc,
+                branch: other_rec.branch,
+                shared_files: shared,
+            });
+        }
+    }
+    result
 }
 
 pub fn run(conn: &Connection, cfg: &Config, id_or_uuid: &str) -> Result<()> {
@@ -422,6 +478,9 @@ fn save(conn: &Connection, cfg: &Config, detail: &mut Detail) -> Result<()> {
         task.urgency = t.urgency;
     }
     detail.history = db::get_history(conn, &detail.task.uuid)?;
+    // Reload branch / overlaps in case project changed.
+    detail.branch = db::get_task_branch(conn, &detail.task.uuid);
+    detail.overlaps = compute_overlaps(conn, &detail.task, &detail.branch);
     Ok(())
 }
 
@@ -604,6 +663,18 @@ fn render(f: &mut Frame, st: &EditState) {
         }
     }
 
+    // Split the main content area horizontally when wide enough for the panel.
+    let show_panel = chunks[0].width >= 96;
+    let (left_area, panel_area) = if show_panel {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(50), Constraint::Length(42)])
+            .split(chunks[0]);
+        (cols[0], Some(cols[1]))
+    } else {
+        (chunks[0], None)
+    };
+
     let para = Paragraph::new(lines)
         .block(
             Block::default()
@@ -613,7 +684,21 @@ fn render(f: &mut Frame, st: &EditState) {
         )
         .wrap(Wrap { trim: false })
         .scroll((st.scroll, 0));
-    f.render_widget(para, chunks[0]);
+    f.render_widget(para, left_area);
+
+    // ── Git branch panel
+    if let Some(panel) = panel_area {
+        let git_lines = git_panel_lines(d);
+        let git_para = Paragraph::new(git_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Git ")
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
+            .wrap(Wrap { trim: false });
+        f.render_widget(git_para, panel);
+    }
 
     // ── Edit bar
     if st.editing {
@@ -641,13 +726,149 @@ fn render(f: &mut Frame, st: &EditState) {
     let footer = if st.editing {
         " type to edit  •  Enter confirm  •  Esc cancel ".to_string()
     } else {
-        " ↑/↓ move  •  Enter edit field / open file·link  •  ←/→ priority  •  PgUp/PgDn scroll  •  q close ".to_string()
+        " ↑/↓ move  •  Enter edit/open  •  ←/→ priority  •  PgUp/PgDn scroll  •  q close ".to_string()
     };
     let footer_idx = chunks.len() - 1;
     f.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::Gray)),
         chunks[footer_idx],
     );
+}
+
+/// Build the content lines for the Git branch panel.
+fn git_panel_lines(d: &Detail) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = vec![];
+
+    let Some(rec) = &d.branch else {
+        lines.push(Line::from(Span::styled(
+            "  No branch tied.",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Run: tk <id> addbranch",
+            Style::default().fg(Color::Gray),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  Then: tk stop <id> to snapshot.",
+            Style::default().fg(Color::Gray),
+        )));
+        return lines;
+    };
+
+    // Branch name line
+    lines.push(Line::from(vec![
+        Span::styled("  Branch  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(rec.branch.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    ]));
+    if let Some(base) = &rec.base {
+        lines.push(Line::from(vec![
+            Span::styled("  Base    ", Style::default().fg(Color::DarkGray)),
+            Span::styled(base.clone(), Style::default().fg(Color::Gray)),
+        ]));
+    }
+    if let Some(logged_at) = rec.logged_at {
+        let ts = logged_at.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+        lines.push(Line::from(vec![
+            Span::styled("  Logged  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(ts, Style::default().fg(Color::Gray)),
+        ]));
+    }
+    lines.push(Line::from(""));
+
+    match &rec.files {
+        None => {
+            lines.push(Line::from(Span::styled(
+                "  No snapshot yet.",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  Run: tk stop <id>",
+                Style::default().fg(Color::Gray),
+            )));
+        }
+        Some(files) if files.is_empty() => {
+            lines.push(Line::from(Span::styled(
+                "  No changes vs base.",
+                Style::default().fg(Color::Green),
+            )));
+        }
+        Some(files) => {
+            const MAX_FILES: usize = 20;
+            lines.push(Line::from(Span::styled(
+                format!("  {} file{} changed", files.len(), if files.len() == 1 { "" } else { "s" }),
+                Style::default().fg(Color::Yellow),
+            )));
+            for f in files.iter().take(MAX_FILES) {
+                // Show only filename for brevity; full path on hover isn't feasible in TUI
+                let name = std::path::Path::new(f)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(f.as_str());
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default()),
+                    Span::styled(name.to_string(), Style::default().fg(Color::Cyan)),
+                    if name != f.as_str() {
+                        Span::styled(
+                            format!("  {}", f),
+                            Style::default().fg(Color::DarkGray),
+                        )
+                    } else {
+                        Span::raw("")
+                    },
+                ]));
+            }
+            if files.len() > MAX_FILES {
+                lines.push(Line::from(Span::styled(
+                    format!("    +{} more", files.len() - MAX_FILES),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        }
+    }
+
+    // Overlap section
+    if !d.overlaps.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  ⚠  Potential overlaps",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )));
+        for ov in &d.overlaps {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  [{:>2}] ", ov.id), Style::default().fg(Color::Gray)),
+                Span::styled(
+                    truncate_str(&ov.description, 20),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(
+                    format!(" ({})", ov.branch),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+            for sf in &ov.shared_files {
+                let name = std::path::Path::new(sf)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(sf.as_str());
+                lines.push(Line::from(Span::styled(
+                    format!("    ↳ {name}"),
+                    Style::default().fg(Color::Red),
+                )));
+            }
+        }
+    }
+
+    lines
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let t: String = s.chars().take(max - 1).collect();
+        format!("{t}…")
+    }
 }
 
 /// A selectable file/link row with a `›` marker when focused.

@@ -15,6 +15,7 @@ const YELLOW: &str = "\x1b[33m";
 const GREEN: &str = "\x1b[32m";
 const CYAN: &str = "\x1b[36m";
 const GRAY: &str = "\x1b[90m";
+const MAGENTA: &str = "\x1b[35m";
 
 pub fn run(
     conn: &Connection,
@@ -34,6 +35,7 @@ pub fn run(
     };
 
     let tasks = db::list_tasks(conn, filter.as_deref())?;
+    let link_flags = db::link_flags_by_task(conn).unwrap_or_default();
 
     if tasks.is_empty() {
         let scope = filter
@@ -81,16 +83,30 @@ pub fn run(
 
         let active_marker = if task.is_active() { "●" } else { " " };
 
+        // PR / link indicator for an at-a-glance scan.
+        let flags = link_flags
+            .get(&task.uuid.to_string())
+            .copied()
+            .unwrap_or_default();
+        let pr_badge_plain = if flags.pr {
+            "[PR] "
+        } else if flags.any {
+            "[link] "
+        } else {
+            ""
+        };
+
         // Colorize
         if no_color {
             println!(
-                "{active}{id:>3}  {pri:<4}  {proj:<16}  {due:<12}  {urg:>6}  {desc}",
+                "{active}{id:>3}  {pri:<4}  {proj:<16}  {due:<12}  {urg:>6}  {pr}{desc}",
                 active = active_marker,
                 id = id_str,
                 pri = pri_str,
                 proj = proj_display,
                 due = due_str,
                 urg = urg_str,
+                pr = pr_badge_plain,
                 desc = desc_display,
             );
         } else {
@@ -106,14 +122,22 @@ pub fn run(
             } else {
                 " ".to_string()
             };
+            let pr_badge = if flags.pr {
+                format!("{MAGENTA}{BOLD}PR{RESET} ")
+            } else if flags.any {
+                format!("{CYAN}↗{RESET} ")
+            } else {
+                String::new()
+            };
             println!(
-                "{active}{CYAN}{id:>3}{RESET}  {pri}  {GRAY}{proj:<16}{RESET}  {due:<12}  {GRAY}{urg:>6}{RESET}  {desc}",
+                "{active}{CYAN}{id:>3}{RESET}  {pri}  {GRAY}{proj:<16}{RESET}  {due:<12}  {GRAY}{urg:>6}{RESET}  {pr}{desc}",
                 active = active_col,
                 id = id_str,
                 pri = pri_colored,
                 proj = proj_display,
                 due = due_colored,
                 urg = urg_str,
+                pr = pr_badge,
                 desc = desc_display,
             );
         }

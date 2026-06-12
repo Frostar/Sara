@@ -5,6 +5,7 @@ mod dates;
 mod db;
 mod enrich;
 mod files;
+mod git;
 mod llm;
 mod model;
 mod project;
@@ -28,7 +29,7 @@ fn run() -> Result<()> {
     } else if args.len() >= 3 && args[1].parse::<i64>().is_ok() {
         const ACTIONS: &[&str] = &[
             "start", "stop", "done", "delete", "modify", "info", "dep", "annotate", "comment",
-            "attach", "link",
+            "attach", "pr", "link", "addbranch",
         ];
         if ACTIONS.contains(&args[2].as_str()) {
             let id = args.remove(1); // remove id
@@ -137,6 +138,10 @@ fn run() -> Result<()> {
                 commands::dep::run_list(&conn, &id)?;
             }
         },
+
+        Command::Addbranch { id, clear } => {
+            commands::branch::run(&conn, &id, clear)?;
+        }
 
         Command::Undo => {
             commands::undo::run(&conn)?;

@@ -85,6 +85,7 @@ pub enum Command {
     },
 
     /// Attach a file path or URL to a task (URLs become links)
+    #[command(visible_alias = "pr")]
     Attach {
         /// Task id or uuid prefix
         id: String,
@@ -164,6 +165,15 @@ pub enum Command {
         id: String,
         #[command(subcommand)]
         action: DepAction,
+    },
+
+    /// Tie the currently active git branch to a task (snapshot on tk stop)
+    Addbranch {
+        /// Task id or uuid prefix
+        id: String,
+        /// Remove the tied branch
+        #[arg(long)]
+        clear: bool,
     },
 
     /// Revert the most recent command

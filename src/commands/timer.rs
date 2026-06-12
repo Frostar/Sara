@@ -4,6 +4,7 @@ use rusqlite::Connection;
 
 use crate::config::Config;
 use crate::db;
+use crate::git;
 use crate::model::format_duration;
 
 pub fn start(conn: &Connection, cfg: &Config, id_or_uuid: &str) -> Result<()> {
@@ -52,5 +53,33 @@ pub fn stop(conn: &Connection, cfg: &Config, id_or_uuid: &str) -> Result<()> {
         format_duration(session),
         format_duration(task.time_spent)
     );
+
+    // If this task has a tied branch, snapshot its changed files.
+    if let Some(branch_rec) = db::get_task_branch(&conn, &task.uuid) {
+        let project_path = db::get_project(conn, &task.project)
+            .ok()
+            .flatten()
+            .and_then(|p| p.path);
+
+        if let Some(path) = project_path {
+            let repo = std::path::Path::new(&path);
+            match git::changed_files(repo, &branch_rec.branch) {
+                Ok((base, files)) => {
+                    let n = files.len();
+                    let _ = db::log_branch_changes(conn, &task.uuid, &base, &files);
+                    println!(
+                        "Logged {} changed file{} on branch '{}'.",
+                        n,
+                        if n == 1 { "" } else { "s" },
+                        branch_rec.branch
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not snapshot branch changes: {e:#}");
+                }
+            }
+        }
+    }
+
     Ok(())
 }
