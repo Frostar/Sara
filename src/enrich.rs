@@ -7,13 +7,15 @@ use crate::llm::{self, EnrichmentRequest, EnrichmentResponse};
 use crate::model::Project;
 
 /// Run LLM enrichment for a task description.
-/// Returns None if LLM is unavailable/fails (caller treats as no suggestions).
+/// Returns `(suggestions, error_message)`.  `suggestions` is None when the
+/// LLM call fails; `error_message` is Some in that case so the caller can
+/// surface it to the user.
 pub fn enrich_task(
     conn: &Connection,
     cfg: &Config,
     description: &str,
     project: &Project,
-) -> Option<EnrichmentResponse> {
+) -> (Option<EnrichmentResponse>, Option<String>) {
     // Gather existing tasks for dep suggestions
     let existing_tasks: Vec<(String, String)> = crate::db::list_tasks(conn, None)
         .unwrap_or_default()
@@ -50,10 +52,10 @@ pub fn enrich_task(
     spinner.finish_and_clear();
 
     match result {
-        Ok(resp) => Some(resp),
+        Ok(resp) => (Some(resp), None),
         Err(e) => {
-            eprintln!("LLM enrichment failed (continuing without): {e:#}");
-            None
+            let msg = format!("{e:#}");
+            (None, Some(msg))
         }
     }
 }

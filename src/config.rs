@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +66,11 @@ impl Default for UrgencyConfig {
 pub struct Config {
     pub default_project: String,
     pub date_dialect: String,
+    /// Active named provider (overrides [llm] when set)
+    pub active_provider: Option<String>,
+    /// Named provider profiles: `tk provider use <name>` switches between them
+    pub providers: HashMap<String, LlmConfig>,
+    /// Fallback / legacy direct LLM config
     pub llm: LlmConfig,
     pub urgency: UrgencyConfig,
 }
@@ -74,9 +80,23 @@ impl Default for Config {
         Config {
             default_project: "inbox".to_string(),
             date_dialect: "uk".to_string(),
+            active_provider: None,
+            providers: HashMap::new(),
             llm: LlmConfig::default(),
             urgency: UrgencyConfig::default(),
         }
+    }
+}
+
+impl Config {
+    /// Return the effective LLM config: active named profile if set, else [llm].
+    pub fn effective_llm(&self) -> &LlmConfig {
+        if let Some(ref name) = self.active_provider {
+            if let Some(profile) = self.providers.get(name) {
+                return profile;
+            }
+        }
+        &self.llm
     }
 }
 

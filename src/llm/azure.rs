@@ -6,7 +6,7 @@ use super::{
     EnrichmentRequest, EnrichmentResponse, LlmProvider, inline_schema_for_openai, system_prompt,
     user_prompt,
 };
-use crate::config::Config;
+use crate::config::LlmConfig;
 
 /// Azure OpenAI provider.
 /// Endpoint: https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version=...
@@ -21,9 +21,8 @@ pub struct AzureOpenAiProvider {
 }
 
 impl AzureOpenAiProvider {
-    pub fn new(cfg: &Config) -> Self {
+    pub fn new(cfg: &LlmConfig) -> Self {
         let resource = cfg
-            .llm
             .base_url
             .clone()
             .unwrap_or_else(|| "https://my-resource.openai.azure.com".to_string());
@@ -36,11 +35,11 @@ impl AzureOpenAiProvider {
         };
 
         AzureOpenAiProvider {
-            api_key: cfg.llm.api_key.clone().unwrap_or_default(),
+            api_key: cfg.api_key.clone().unwrap_or_default(),
             base_url,
-            deployment: cfg.llm.model.clone(),
+            deployment: cfg.model.clone(),
             api_version: "2024-08-01-preview".to_string(),
-            timeout: Duration::from_secs(cfg.llm.timeout_secs),
+            timeout: Duration::from_secs(cfg.timeout_secs),
         }
     }
 }
@@ -90,7 +89,9 @@ impl LlmProvider for AzureOpenAiProvider {
 
         let content = resp_json["choices"][0]["message"]["content"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Unexpected Azure OpenAI response shape"))?;
+            .ok_or_else(|| anyhow::anyhow!("Unexpected Azure OpenAI response shape: {}", resp_json))?;
+
+        let _ = std::fs::write("/tmp/tk-azure-debug.txt", format!("content: {content}\n"));
 
         let enrichment: EnrichmentResponse =
             serde_json::from_str(content).context("Could not parse Azure OpenAI enrichment JSON")?;

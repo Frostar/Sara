@@ -6,7 +6,7 @@ use super::{
     EnrichmentRequest, EnrichmentResponse, LlmProvider, inline_schema_for_openai, system_prompt,
     user_prompt,
 };
-use crate::config::Config;
+use crate::config::LlmConfig;
 
 pub struct OpenAiProvider {
     api_key: String,
@@ -16,16 +16,15 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    pub fn new(cfg: &Config) -> Self {
+    pub fn new(cfg: &LlmConfig) -> Self {
         OpenAiProvider {
-            api_key: cfg.llm.api_key.clone().unwrap_or_default(),
-            model: cfg.llm.model.clone(),
+            api_key: cfg.api_key.clone().unwrap_or_default(),
+            model: cfg.model.clone(),
             base_url: cfg
-                .llm
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "https://api.openai.com".to_string()),
-            timeout: Duration::from_secs(cfg.llm.timeout_secs),
+            timeout: Duration::from_secs(cfg.timeout_secs),
         }
     }
 }

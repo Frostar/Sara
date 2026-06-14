@@ -3,7 +3,7 @@ use serde_json::json;
 use std::time::Duration;
 
 use super::{EnrichmentRequest, EnrichmentResponse, LlmProvider, system_prompt, user_prompt};
-use crate::config::Config;
+use crate::config::LlmConfig;
 
 pub struct OllamaProvider {
     base_url: String,
@@ -12,15 +12,14 @@ pub struct OllamaProvider {
 }
 
 impl OllamaProvider {
-    pub fn new(cfg: &Config) -> Self {
+    pub fn new(cfg: &LlmConfig) -> Self {
         OllamaProvider {
             base_url: cfg
-                .llm
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "http://localhost:11434".to_string()),
-            model: cfg.llm.model.clone(),
-            timeout: Duration::from_secs(cfg.llm.timeout_secs),
+            model: cfg.model.clone(),
+            timeout: Duration::from_secs(cfg.timeout_secs),
         }
     }
 }

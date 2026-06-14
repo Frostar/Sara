@@ -179,6 +179,12 @@ pub enum Command {
     /// Revert the most recent command
     Undo,
 
+    /// Manage LLM provider profiles (switch on the fly without editing config)
+    Provider {
+        #[command(subcommand)]
+        action: ProviderAction,
+    },
+
     /// Print config and data directory paths
     Paths,
 
@@ -187,6 +193,37 @@ pub enum Command {
         /// Shell type
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProviderAction {
+    /// List configured provider profiles and show the active one
+    List,
+    /// Switch to a named profile (or "default" to revert to [llm] block)
+    Use {
+        name: String,
+    },
+    /// Add a new named provider profile (and activate it)
+    Add {
+        /// Profile name (e.g. "azure", "mlx", "gpt4o")
+        name: String,
+        /// Provider type: azure | openai | mlx | ollama | anthropic
+        #[arg(long = "type", short = 't')]
+        provider_type: String,
+        /// Model name
+        #[arg(long, short)]
+        model: String,
+        /// Base URL (required for azure/mlx/ollama)
+        #[arg(long, short)]
+        url: Option<String>,
+        /// API key
+        #[arg(long, short)]
+        key: Option<String>,
+    },
+    /// Remove a named profile
+    Remove {
+        name: String,
     },
 }
 

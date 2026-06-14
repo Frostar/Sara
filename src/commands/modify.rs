@@ -47,6 +47,7 @@ pub fn run(conn: &Connection, cfg: &Config, id_or_uuid: &str, _no_llm: bool) -> 
         available_files: project_files,
         suggested_dep_indices: vec![],
         suggested_files: vec![],
+        llm_status: None,
     };
 
     let mut terminal = tui::init_terminal()?;

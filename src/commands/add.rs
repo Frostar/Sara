@@ -56,14 +56,17 @@ pub fn run(
     });
 
     // LLM enrichment is opt-in (it adds latency); enable with --llm/--ai.
-    let enrichment = if llm {
+    // Also detect the flag when trailing_var_arg consumed it as part of words.
+    let llm = llm || words.iter().any(|w| w == "--llm" || w == "--ai");
+    let (enrichment, llm_error) = if llm {
         enrich::enrich_task(conn, cfg, &parsed.description, &project_profile)
     } else {
-        None
+        (None, None)
     };
 
     // Check if we're in a TTY
     let is_tty = atty_check();
+    let yes = yes || words.iter().any(|w| w == "--yes" || w == "-y");
 
     let form_result: Option<FormInput> = if yes || !is_tty {
         // Non-interactive: accept LLM proposals directly
@@ -143,6 +146,7 @@ pub fn run(
             available_files: project_files,
             suggested_dep_indices: vec![], // could map LLM dep suggestions here
             suggested_files: vec![],
+            llm_status: llm_error,
         };
 
         let mut terminal = tui::init_terminal()?;

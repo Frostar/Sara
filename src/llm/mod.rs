@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod azure;
+pub mod mlx;
 pub mod ollama;
 pub mod openai;
 
@@ -39,11 +40,13 @@ pub trait LlmProvider: Send + Sync {
 }
 
 pub fn build_provider(cfg: &Config) -> Box<dyn LlmProvider> {
-    match cfg.llm.provider.as_str() {
-        "openai" => Box::new(openai::OpenAiProvider::new(cfg)),
-        "anthropic" => Box::new(anthropic::AnthropicProvider::new(cfg)),
-        "azure" | "azure_openai" => Box::new(azure::AzureOpenAiProvider::new(cfg)),
-        _ => Box::new(ollama::OllamaProvider::new(cfg)),
+    let llm = cfg.effective_llm();
+    match llm.provider.as_str() {
+        "openai" => Box::new(openai::OpenAiProvider::new(llm)),
+        "mlx" => Box::new(mlx::MlxProvider::new(llm)),
+        "anthropic" => Box::new(anthropic::AnthropicProvider::new(llm)),
+        "azure" | "azure_openai" => Box::new(azure::AzureOpenAiProvider::new(llm)),
+        _ => Box::new(ollama::OllamaProvider::new(llm)),
     }
 }
 

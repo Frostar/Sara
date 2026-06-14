@@ -41,6 +41,12 @@ fn run() -> Result<()> {
     // Human-readable label for the command, captured before clap consumes args.
     let command_label = args[1..].join(" ");
     let cli = Cli::parse_from(args);
+
+    // Provider command only touches config — no DB needed
+    if let Command::Provider { ref action } = cli.command {
+        return commands::provider::run(action);
+    }
+
     let cfg = config::load()?;
     let mut conn = db::open()?;
 
@@ -145,6 +151,10 @@ fn run() -> Result<()> {
 
         Command::Undo => {
             commands::undo::run(&conn)?;
+        }
+
+        Command::Provider { action } => {
+            commands::provider::run(&action)?;
         }
 
         Command::Paths => {

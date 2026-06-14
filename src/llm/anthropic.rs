@@ -3,7 +3,7 @@ use serde_json::json;
 use std::time::Duration;
 
 use super::{EnrichmentRequest, EnrichmentResponse, LlmProvider, system_prompt, user_prompt};
-use crate::config::Config;
+use crate::config::LlmConfig;
 
 pub struct AnthropicProvider {
     api_key: String,
@@ -12,11 +12,11 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn new(cfg: &Config) -> Self {
+    pub fn new(cfg: &LlmConfig) -> Self {
         AnthropicProvider {
-            api_key: cfg.llm.api_key.clone().unwrap_or_default(),
-            model: cfg.llm.model.clone(),
-            timeout: Duration::from_secs(cfg.llm.timeout_secs),
+            api_key: cfg.api_key.clone().unwrap_or_default(),
+            model: cfg.model.clone(),
+            timeout: Duration::from_secs(cfg.timeout_secs),
         }
     }
 }

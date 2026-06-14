@@ -36,6 +36,8 @@ pub struct FormContext {
     pub suggested_dep_indices: Vec<usize>,
     /// File paths "suggested" by the LLM (shown dim/italic).
     pub suggested_files: Vec<String>,
+    /// If LLM enrichment failed, the error message to show in the form header.
+    pub llm_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -595,14 +597,43 @@ fn render(f: &mut Frame, state: &mut FormState) {
 
     let inner = shrink(area, 1);
 
-    // Split: fields on top, footer at bottom
-    let chunks = Layout::default()
+    // If there's an LLM status message, reserve one line for it.
+    let (status_area, fields_area) = if state.ctx.llm_status.is_some() {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+        (Some(chunks[0]), chunks[1])
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+        (None, chunks[0])
+    };
+
+    // Footer is always last — re-split to get it
+    let footer_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
+    let footer = *footer_chunks.last().unwrap();
 
-    render_fields(f, state, chunks[0]);
-    render_footer(f, state, chunks[1]);
+    if let (Some(sa), Some(msg)) = (status_area, &state.ctx.llm_status) {
+        let short = if msg.len() > sa.width as usize {
+            format!("⚠ LLM: {}…", &msg[..sa.width.saturating_sub(10) as usize])
+        } else {
+            format!("⚠ LLM: {msg}")
+        };
+        f.render_widget(
+            Paragraph::new(short)
+                .style(Style::default().fg(Color::Yellow)),
+            sa,
+        );
+    }
+
+    render_fields(f, state, fields_area);
+    render_footer(f, state, footer);
 }
 
 fn shrink(r: Rect, n: u16) -> Rect {
@@ -883,6 +914,7 @@ mod tests {
             available_files: vec!["Cargo.toml".into(), "README.md".into()],
             suggested_dep_indices: vec![],
             suggested_files: vec![],
+            llm_status: None,
         }
     }
 
