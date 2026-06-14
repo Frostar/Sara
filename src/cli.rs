@@ -185,6 +185,15 @@ pub enum Command {
         action: ProviderAction,
     },
 
+    /// Add a checklist item to a task
+    #[clap(name = "check")]
+    Check {
+        /// Task ID
+        id: String,
+        /// Checklist item text
+        text: String,
+    },
+
     /// Print config and data directory paths
     Paths,
 

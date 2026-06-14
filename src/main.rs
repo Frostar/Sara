@@ -157,6 +157,12 @@ fn run() -> Result<()> {
             commands::provider::run(&action)?;
         }
 
+        Command::Check { id, text } => {
+            let task = db::resolve_task(&conn, &id)?;
+            db::add_checklist_item(&conn, &task.uuid, &text)?;
+            println!("Added checklist item to task {}", task.id.unwrap_or(0));
+        }
+
         Command::Paths => {
             let cfg_path = config::config_path()?;
             let db_path = config::db_path()?;

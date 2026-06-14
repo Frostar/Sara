@@ -135,6 +135,17 @@ fn apply_migrations(conn: &mut Connection) -> Result<()> {
                 FOREIGN KEY (task_uuid) REFERENCES tasks(uuid) ON DELETE CASCADE
             );",
         ),
+        M::up(
+            "ALTER TABLE tasks ADD COLUMN estimate_mins INTEGER;
+             CREATE TABLE IF NOT EXISTS task_checklist (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_uuid TEXT NOT NULL,
+                text      TEXT NOT NULL,
+                done      INTEGER NOT NULL DEFAULT 0,
+                position  INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (task_uuid) REFERENCES tasks(uuid) ON DELETE CASCADE
+             );",
+        ),
     ]);
     migrations
         .to_latest(conn)
@@ -168,6 +179,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     let urgency: f64 = row.get(11)?;
     let started_str: Option<String> = row.get(12)?;
     let time_spent: i64 = row.get(13)?;
+    let estimate_mins: Option<i64> = row.get(14)?;
 
     let uuid = Uuid::parse_str(&uuid_str).unwrap_or_else(|_| Uuid::new_v4());
     let status = match status_str.as_str() {
@@ -198,11 +210,12 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         urgency,
         started_at,
         time_spent,
+        estimate_mins,
     })
 }
 
 const TASK_COLUMNS: &str =
-    "uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent";
+    "uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins";
 
 // ── undo ─────────────────────────────────────────────────────────────────────
 
@@ -288,8 +301,9 @@ fn restore_task_row(conn: &Connection, t: &Task) -> Result<()> {
     if n == 0 {
         conn.execute(
             "INSERT INTO tasks (uuid, id, description, project, status, priority, due,
-                                entry, modified, end, tags_json, urgency, started_at, time_spent)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                                entry, modified, end, tags_json, urgency, started_at, time_spent,
+                                estimate_mins)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 t.uuid.to_string(),
                 t.id,
@@ -305,6 +319,7 @@ fn restore_task_row(conn: &Connection, t: &Task) -> Result<()> {
                 t.urgency,
                 t.started_at.as_ref().map(dt_to_str),
                 t.time_spent,
+                t.estimate_mins,
             ],
         )?;
     }
@@ -383,8 +398,9 @@ pub fn insert_task(conn: &Connection, task: &mut Task) -> Result<()> {
     task.id = Some(id);
     conn.execute(
         "INSERT INTO tasks (uuid, id, description, project, status, priority, due,
-                            entry, modified, end, tags_json, urgency, started_at, time_spent)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                            entry, modified, end, tags_json, urgency, started_at, time_spent,
+                            estimate_mins)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
         params![
             task.uuid.to_string(),
             task.id,
@@ -400,6 +416,7 @@ pub fn insert_task(conn: &Connection, task: &mut Task) -> Result<()> {
             task.urgency,
             task.started_at.as_ref().map(dt_to_str),
             task.time_spent,
+            task.estimate_mins,
         ],
     )?;
     conn.execute(
@@ -471,8 +488,8 @@ pub fn update_task(conn: &Connection, task: &Task) -> Result<()> {
     conn.execute(
         "UPDATE tasks SET description=?1, project=?2, status=?3, priority=?4, due=?5,
                          modified=?6, end=?7, tags_json=?8, urgency=?9,
-                         started_at=?10, time_spent=?11
-         WHERE uuid=?12",
+                         started_at=?10, time_spent=?11, estimate_mins=?12
+         WHERE uuid=?13",
         params![
             task.description,
             task.project,
@@ -485,6 +502,7 @@ pub fn update_task(conn: &Connection, task: &Task) -> Result<()> {
             task.urgency,
             task.started_at.as_ref().map(dt_to_str),
             task.time_spent,
+            task.estimate_mins,
             task.uuid.to_string(),
         ],
     )?;
@@ -1510,4 +1528,154 @@ mod tests {
         let sourced = get_task_files_sourced(&conn, &task.uuid).unwrap();
         assert_eq!(sourced, vec![("y.rs".to_string(), SOURCE_MANUAL.to_string())]);
     }
+}
+
+// ── urgency breakdown ─────────────────────────────────────────────────────────
+
+pub struct UrgencyBreakdown {
+    pub priority: f64,
+    pub due: f64,
+    pub blocking: f64,
+    pub blocked: f64,
+    pub active: f64,
+    pub tags: f64,
+    pub project: f64,
+    pub age: f64,
+}
+
+pub fn compute_urgency_breakdown(
+    task: &Task,
+    cfg: &crate::config::UrgencyConfig,
+    is_blocked: bool,
+    blocking_count: usize,
+) -> UrgencyBreakdown {
+    let priority = task
+        .priority
+        .as_ref()
+        .map(|p| p.urgency_coefficient())
+        .unwrap_or(0.0);
+
+    let due = if let Some(due) = task.due {
+        let days_until: f64 = (due - Utc::now()).num_seconds() as f64 / 86400.0;
+        let factor = if days_until <= 0.0 {
+            1.0
+        } else if days_until >= 7.0 {
+            0.0
+        } else {
+            1.0 - (days_until / 7.0)
+        };
+        cfg.due * factor
+    } else {
+        0.0
+    };
+
+    let blocking = if blocking_count > 0 { cfg.blocking } else { 0.0 };
+    let blocked = if is_blocked { cfg.blocked } else { 0.0 };
+    let active = if task.is_active() { cfg.active } else { 0.0 };
+    let tags = if !task.tags.is_empty() { cfg.has_tags } else { 0.0 };
+    let project = if task.project != "inbox" { cfg.project } else { 0.0 };
+    let age_days = (Utc::now() - task.entry).num_days() as f64;
+    let age = cfg.age * (age_days / cfg.age_max).min(1.0);
+
+    UrgencyBreakdown { priority, due, blocking, blocked, active, tags, project, age }
+}
+
+// ── similar tasks ─────────────────────────────────────────────────────────────
+
+/// Tasks in the same project sharing at least one tag, excluding the task itself.
+pub fn similar_tasks(
+    conn: &Connection,
+    task_uuid: &Uuid,
+    project: &str,
+    tags: &[String],
+) -> Result<Vec<(i64, String, f64)>> {
+    if tags.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {TASK_COLUMNS} FROM tasks WHERE status='pending' AND project=?1 AND uuid!=?2"
+    ))?;
+    let all: Vec<Task> = stmt
+        .query_map(
+            rusqlite::params![project, task_uuid.to_string()],
+            row_to_task,
+        )?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let result = all
+        .into_iter()
+        .filter(|t| t.tags.iter().any(|tag| tags.contains(tag)))
+        .filter_map(|t| t.id.map(|id| (id, t.description.clone(), t.urgency)))
+        .collect();
+    Ok(result)
+}
+
+// ── checklist ─────────────────────────────────────────────────────────────────
+
+pub struct ChecklistItem {
+    pub id: i64,
+    pub text: String,
+    pub done: bool,
+}
+
+pub fn get_checklist(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<ChecklistItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, text, done FROM task_checklist WHERE task_uuid=?1 ORDER BY position, id",
+    )?;
+    let items = stmt
+        .query_map([task_uuid.to_string()], |r| {
+            Ok(ChecklistItem {
+                id: r.get(0)?,
+                text: r.get(1)?,
+                done: r.get::<_, i64>(2)? != 0,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(items)
+}
+
+pub fn add_checklist_item(conn: &Connection, task_uuid: &Uuid, text: &str) -> Result<()> {
+    let pos: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(position),0)+1 FROM task_checklist WHERE task_uuid=?1",
+            [task_uuid.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap_or(1);
+    conn.execute(
+        "INSERT INTO task_checklist (task_uuid, text, done, position) VALUES (?1,?2,0,?3)",
+        rusqlite::params![task_uuid.to_string(), text, pos],
+    )?;
+    Ok(())
+}
+
+pub fn toggle_checklist_item(conn: &Connection, item_id: i64) -> Result<bool> {
+    let done: i64 = conn.query_row(
+        "SELECT done FROM task_checklist WHERE id=?1",
+        [item_id],
+        |r| r.get(0),
+    )?;
+    let new_done = if done == 0 { 1i64 } else { 0i64 };
+    conn.execute(
+        "UPDATE task_checklist SET done=?1 WHERE id=?2",
+        rusqlite::params![new_done, item_id],
+    )?;
+    Ok(new_done != 0)
+}
+
+pub fn delete_checklist_item(conn: &Connection, item_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM task_checklist WHERE id=?1", [item_id])?;
+    Ok(())
+}
+
+// ── estimate ──────────────────────────────────────────────────────────────────
+
+pub fn set_estimate(conn: &Connection, task_uuid: &Uuid, mins: Option<i64>) -> Result<()> {
+    conn.execute(
+        "UPDATE tasks SET estimate_mins=?1 WHERE uuid=?2",
+        rusqlite::params![mins, task_uuid.to_string()],
+    )?;
+    Ok(())
 }

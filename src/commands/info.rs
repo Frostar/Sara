@@ -34,6 +34,12 @@ struct Detail {
     branch: Option<crate::db::BranchRecord>,
     /// Tasks in the same project whose snapshot files overlap with this task's.
     overlaps: Vec<BranchOverlap>,
+    /// Other pending tasks in the same project sharing at least one tag.
+    similar: Vec<(i64, String, f64)>,
+    /// Checklist items for this task.
+    checklist: Vec<crate::db::ChecklistItem>,
+    /// Urgency score components.
+    urgency_breakdown: Option<crate::db::UrgencyBreakdown>,
 }
 
 struct BranchOverlap {
@@ -50,14 +56,16 @@ enum EditField {
     Priority,
     Due,
     Tags,
+    Estimate,
 }
 
-const EDIT_FIELDS: [EditField; 5] = [
+const EDIT_FIELDS: [EditField; 6] = [
     EditField::Description,
     EditField::Project,
     EditField::Priority,
     EditField::Due,
     EditField::Tags,
+    EditField::Estimate,
 ];
 
 impl EditField {
@@ -68,6 +76,7 @@ impl EditField {
             EditField::Priority => "Priority",
             EditField::Due => "Due",
             EditField::Tags => "Tags",
+            EditField::Estimate => "Estimate",
         }
     }
 }
@@ -78,6 +87,7 @@ enum Focusable {
     Field(EditField),
     File(String),
     Link(usize),
+    Checklist(usize),
 }
 
 /// Ordered list of focusable items: editable fields, then links, then files.
@@ -89,6 +99,9 @@ fn focusables(d: &Detail) -> Vec<Focusable> {
     }
     for f in d.manual_files.iter().chain(d.suggested_files.iter()) {
         v.push(Focusable::File(f.clone()));
+    }
+    for i in 0..d.checklist.len() {
+        v.push(Focusable::Checklist(i));
     }
     v
 }
@@ -155,7 +168,7 @@ fn open_in_editor(path: &std::path::Path) -> std::io::Result<()> {
     cmd.status().map(|_| ())
 }
 
-fn load_detail(conn: &Connection, task: Task) -> Result<Detail> {
+fn load_detail(conn: &Connection, cfg: &Config, task: Task) -> Result<Detail> {
     let resolve_ids = |uuids: Vec<uuid::Uuid>| -> Vec<String> {
         uuids
             .iter()
@@ -187,6 +200,20 @@ fn load_detail(conn: &Connection, task: Task) -> Result<Detail> {
     let branch = db::get_task_branch(conn, &task.uuid);
     let overlaps = compute_overlaps(conn, &task, &branch);
 
+    // Similar tasks (shared tags, same project)
+    let similar = db::similar_tasks(conn, &task.uuid, &task.project, &task.tags)
+        .unwrap_or_default();
+
+    // Checklist
+    let checklist = db::get_checklist(conn, &task.uuid).unwrap_or_default();
+
+    // Urgency breakdown
+    let blockers = db::get_blockers(conn, &task.uuid).unwrap_or_default();
+    let blocking_tasks = db::get_blocking(conn, &task.uuid).unwrap_or_default();
+    let urgency_breakdown = Some(db::compute_urgency_breakdown(
+        &task, &cfg.urgency, !blockers.is_empty(), blocking_tasks.len(),
+    ));
+
     Ok(Detail {
         blocked_by: resolve_ids(db::get_blockers(conn, &task.uuid)?),
         blocking: resolve_ids(db::get_blocking(conn, &task.uuid)?),
@@ -198,6 +225,9 @@ fn load_detail(conn: &Connection, task: Task) -> Result<Detail> {
         project_root,
         branch,
         overlaps,
+        similar,
+        checklist,
+        urgency_breakdown,
         task,
     })
 }
@@ -243,7 +273,7 @@ fn compute_overlaps(
 
 pub fn run(conn: &Connection, cfg: &Config, id_or_uuid: &str) -> Result<()> {
     let task = db::resolve_task(conn, id_or_uuid)?;
-    let detail = load_detail(conn, task)?;
+    let detail = load_detail(conn, cfg, task)?;
 
     // If not a TTY, fall back to plain text output (read-only).
     use std::io::IsTerminal;
@@ -390,8 +420,24 @@ fn edit_loop<B: Backend>(
                             terminal.clear()?;
                         }
                     }
+                    Some(Focusable::Checklist(i)) => {
+                        if let Some(item) = st.detail.checklist.get(i) {
+                            let _ = db::toggle_checklist_item(conn, item.id);
+                            st.detail.checklist = db::get_checklist(conn, &st.detail.task.uuid)
+                                .unwrap_or_default();
+                        }
+                    }
                     None => {}
                 },
+                KeyCode::Char(' ') => {
+                    if let Some(Focusable::Checklist(i)) = &current {
+                        if let Some(item) = st.detail.checklist.get(*i) {
+                            let _ = db::toggle_checklist_item(conn, item.id);
+                            st.detail.checklist = db::get_checklist(conn, &st.detail.task.uuid)
+                                .unwrap_or_default();
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -421,6 +467,18 @@ fn current_value(task: &Task, field: EditField) -> String {
             .map(|d| d.with_timezone(&Local).format("%Y-%m-%d").to_string())
             .unwrap_or_default(),
         EditField::Tags => task.tags.join(", "),
+        EditField::Estimate => task
+            .estimate_mins
+            .map(|m| {
+                if m >= 60 {
+                    let h = m / 60;
+                    let rem = m % 60;
+                    if rem == 0 { format!("{h}h") } else { format!("{h}h{rem}m") }
+                } else {
+                    format!("{m}m")
+                }
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -451,6 +509,9 @@ fn apply_field(task: &mut Task, field: EditField, value: &str, cfg: &Config) {
                 .collect();
         }
         EditField::Priority => {}
+        EditField::Estimate => {
+            task.estimate_mins = parse_duration_to_mins(value);
+        }
     }
 }
 
@@ -481,6 +542,15 @@ fn save(conn: &Connection, cfg: &Config, detail: &mut Detail) -> Result<()> {
     // Reload branch / overlaps in case project changed.
     detail.branch = db::get_task_branch(conn, &detail.task.uuid);
     detail.overlaps = compute_overlaps(conn, &detail.task, &detail.branch);
+    // Reload similar tasks and checklist after any save.
+    detail.similar = db::similar_tasks(conn, &detail.task.uuid, &detail.task.project, &detail.task.tags)
+        .unwrap_or_default();
+    detail.checklist = db::get_checklist(conn, &detail.task.uuid).unwrap_or_default();
+    let blockers = db::get_blockers(conn, &detail.task.uuid).unwrap_or_default();
+    let blocking_tasks = db::get_blocking(conn, &detail.task.uuid).unwrap_or_default();
+    detail.urgency_breakdown = Some(db::compute_urgency_breakdown(
+        &detail.task, &cfg.urgency, !blockers.is_empty(), blocking_tasks.len(),
+    ));
     Ok(())
 }
 
@@ -535,6 +605,41 @@ fn render(f: &mut Frame, st: &EditState) {
 
     // ── Read-only fields
     lines.push(field_line("Status", &t.status.to_string()));
+
+    // Age / deadline counter line
+    {
+        let age_days = (Utc::now() - t.entry).num_days();
+        let age_str = if age_days == 0 {
+            "today".to_string()
+        } else if age_days == 1 {
+            "1 day ago".to_string()
+        } else {
+            format!("{age_days} days ago")
+        };
+        let deadline_str = if let Some(due) = t.due {
+            let diff = (due - Utc::now()).num_days();
+            if diff < 0 {
+                format!("  ·  {} day{} overdue", -diff, if diff == -1 { "" } else { "s" })
+            } else if diff == 0 {
+                "  ·  due today".to_string()
+            } else if diff == 1 {
+                "  ·  due tomorrow".to_string()
+            } else {
+                format!("  ·  due in {diff} days")
+            }
+        } else {
+            String::new()
+        };
+        let overdue = t.due.map(|d| d < Utc::now()).unwrap_or(false);
+        lines.push(Line::from(vec![
+            key_span("Age"),
+            Span::styled(
+                format!("{age_str}{deadline_str}"),
+                Style::default().fg(if overdue { Color::Red } else { Color::DarkGray }),
+            ),
+        ]));
+    }
+
     let time_str = if active {
         format!(
             "{}  (running, this session {})",
@@ -546,14 +651,49 @@ fn render(f: &mut Frame, st: &EditState) {
     } else {
         "-".to_string()
     };
-    lines.push(Line::from(vec![
-        key_span("Time spent"),
-        Span::styled(
-            time_str,
-            Style::default().fg(if active { Color::Green } else { Color::Reset }),
-        ),
-    ]));
-    lines.push(field_line("Urgency", &format!("{:.1}", t.urgency)));
+    // Time spent / estimate on the same conceptual row
+    {
+        let estimate_str = t.estimate_mins.map(|m| {
+            let spent_mins = t.total_time_spent() / 60;
+            let pct = if m > 0 { (spent_mins * 100 / m).min(999) } else { 0 };
+            format!(" / est {} ({pct}%)", if m >= 60 {
+                let h = m / 60; let r = m % 60;
+                if r == 0 { format!("{h}h") } else { format!("{h}h{r}m") }
+            } else { format!("{m}m") })
+        }).unwrap_or_default();
+        lines.push(Line::from(vec![
+            key_span("Time spent"),
+            Span::styled(
+                time_str,
+                Style::default().fg(if active { Color::Green } else { Color::Reset }),
+            ),
+            Span::styled(estimate_str, Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
+    // Urgency with breakdown
+    {
+        let breakdown_str = if let Some(ref bd) = d.urgency_breakdown {
+            let mut parts = vec![];
+            if bd.priority != 0.0 { parts.push(format!("pri {:.1}", bd.priority)); }
+            if bd.due != 0.0       { parts.push(format!("due {:.1}", bd.due)); }
+            if bd.blocking != 0.0  { parts.push(format!("blocking {:.1}", bd.blocking)); }
+            if bd.blocked != 0.0   { parts.push(format!("blocked {:.1}", bd.blocked)); }
+            if bd.active != 0.0    { parts.push(format!("active {:.1}", bd.active)); }
+            if bd.age != 0.0       { parts.push(format!("age {:.1}", bd.age)); }
+            if bd.tags != 0.0      { parts.push(format!("tags {:.1}", bd.tags)); }
+            if bd.project != 0.0   { parts.push(format!("proj {:.1}", bd.project)); }
+            if parts.is_empty() { String::new() } else { format!("  ({})", parts.join(" + ")) }
+        } else {
+            String::new()
+        };
+        lines.push(Line::from(vec![
+            key_span("Urgency"),
+            Span::raw(format!("{:.1}", t.urgency)),
+            Span::styled(breakdown_str, Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
     lines.push(field_line(
         "Entered",
         &t.entry.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string(),
@@ -634,6 +774,38 @@ fn render(f: &mut Frame, st: &EditState) {
                 Span::styled(format!("  [{}] ", a.id), Style::default().fg(Color::Gray)),
                 Span::styled(format!("{date}  "), Style::default().fg(Color::Gray)),
                 Span::raw(a.text.clone()),
+            ]));
+        }
+    }
+    // ── Checklist
+    if !d.checklist.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(section("Checklist  (Space to toggle)"));
+        for (i, item) in d.checklist.iter().enumerate() {
+            let is_sel = sel == Some(Focusable::Checklist(i));
+            let marker = if is_sel { "› " } else { "  " };
+            let (box_str, text_style) = if item.done {
+                ("[x]", Style::default().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT))
+            } else if is_sel {
+                ("[ ]", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+            } else {
+                ("[ ]", Style::default())
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{marker}{box_str} "), Style::default().fg(Color::Gray)),
+                Span::styled(item.text.clone(), text_style),
+            ]));
+        }
+    }
+    // ── Similar tasks (shared tags, same project)
+    if !d.similar.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(section("Related tasks (shared tags)"));
+        for (id, desc, urg) in &d.similar {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  #{id:<3} "), Style::default().fg(Color::Gray)),
+                Span::raw(desc.clone()),
+                Span::styled(format!("  urg {urg:.1}"), Style::default().fg(Color::DarkGray)),
             ]));
         }
     }
@@ -981,6 +1153,32 @@ fn section(k: &str) -> Line<'static> {
         k.to_string(),
         Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
     ))
+}
+
+/// Parse a human duration string like "2h30m", "90m", "1h", "45" (minutes) into minutes.
+fn parse_duration_to_mins(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let s_lower = s.to_lowercase();
+    let rest = s_lower.as_str();
+    // Parse hours (handles "2h", "2h30m", "2h 30m")
+    if let Some(h_pos) = rest.find('h') {
+        if let Ok(h) = rest[..h_pos].trim().parse::<i64>() {
+            let mut total = h * 60;
+            let after_h = rest[h_pos + 1..].trim().trim_end_matches('m').trim();
+            if !after_h.is_empty() {
+                if let Ok(m) = after_h.parse::<i64>() {
+                    total += m;
+                }
+            }
+            return Some(total);
+        }
+    }
+    // "Ym" or bare number (minutes)
+    let m_part = rest.trim_end_matches('m').trim();
+    m_part.parse::<i64>().ok()
 }
 
 fn print_plain(d: &Detail) {

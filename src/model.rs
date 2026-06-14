@@ -85,6 +85,8 @@ pub struct Task {
     pub started_at: Option<DateTime<Utc>>,
     /// Accumulated active time in seconds
     pub time_spent: i64,
+    /// Optional time estimate in minutes
+    pub estimate_mins: Option<i64>,
 }
 
 impl Task {
@@ -133,6 +135,7 @@ impl Task {
             urgency: 0.0,
             started_at: None,
             time_spent: 0,
+            estimate_mins: None,
         }
     }
 }
