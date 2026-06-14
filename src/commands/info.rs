@@ -491,7 +491,7 @@ fn render(f: &mut Frame, st: &EditState) {
     let history_height: u16 = if d.history.is_empty() {
         0
     } else {
-        (d.history.len() as u16 + 2).min(9) // border (2) + up to 7 entries
+        (d.history.len() as u16 + 2).min(6) // border (2) + up to 4 most-recent entries
     };
 
     let constraints = if st.editing {
