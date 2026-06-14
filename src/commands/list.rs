@@ -83,11 +83,12 @@ pub fn run(
 
         let active_marker = if task.is_active() { "●" } else { " " };
 
-        // PR / link indicator for an at-a-glance scan.
+        // PR / link / recur indicators for an at-a-glance scan.
         let flags = link_flags
             .get(&task.uuid.to_string())
             .copied()
             .unwrap_or_default();
+        let recur_mark = if task.recur.is_some() { "♺" } else { " " };
         let pr_badge_plain = if flags.pr {
             "[PR] "
         } else if flags.any {
@@ -99,8 +100,9 @@ pub fn run(
         // Colorize
         if no_color {
             println!(
-                "{active}{id:>3}  {pri:<4}  {proj:<16}  {due:<12}  {urg:>6}  {pr}{desc}",
+                "{active}{recur} {id:>3}  {pri:<4}  {proj:<16}  {due:<12}  {urg:>6}  {pr}{desc}",
                 active = active_marker,
+                recur = recur_mark,
                 id = id_str,
                 pri = pri_str,
                 proj = proj_display,
@@ -122,6 +124,11 @@ pub fn run(
             } else {
                 " ".to_string()
             };
+            let recur_col = if task.recur.is_some() {
+                format!("{CYAN}♺{RESET}")
+            } else {
+                " ".to_string()
+            };
             let pr_badge = if flags.pr {
                 format!("{MAGENTA}{BOLD}PR{RESET} ")
             } else if flags.any {
@@ -130,8 +137,9 @@ pub fn run(
                 String::new()
             };
             println!(
-                "{active}{CYAN}{id:>3}{RESET}  {pri}  {GRAY}{proj:<16}{RESET}  {due:<12}  {GRAY}{urg:>6}{RESET}  {pr}{desc}",
+                "{active}{recur} {CYAN}{id:>3}{RESET}  {pri}  {GRAY}{proj:<16}{RESET}  {due:<12}  {GRAY}{urg:>6}{RESET}  {pr}{desc}",
                 active = active_col,
+                recur = recur_col,
                 id = id_str,
                 pri = pri_colored,
                 proj = proj_display,

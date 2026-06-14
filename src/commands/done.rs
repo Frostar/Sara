@@ -55,5 +55,24 @@ pub fn run(conn: &Connection, cfg: &Config, id_or_uuid: &str, force: bool) -> Re
         let _ = db::refresh_urgency(conn, &cfg.urgency, &dep_uuid);
     }
 
+    // Spawn next occurrence for recurring tasks
+    if let Some(ref interval) = task.recur.clone() {
+        let base = task.due.unwrap_or_else(Utc::now);
+        let next_due = crate::model::advance_by_interval(base, interval);
+        let mut next = crate::model::Task::new(task.description.clone(), task.project.clone());
+        next.priority = task.priority.clone();
+        next.tags = task.tags.clone();
+        next.due = Some(next_due);
+        next.recur = Some(interval.clone());
+        next.estimate_mins = task.estimate_mins;
+        next.urgency = db::compute_urgency(&next, &cfg.urgency, false, 0);
+        db::insert_task(conn, &mut next)?;
+        println!(
+            "♺  Next recurrence: #{} due {}",
+            next.id.unwrap_or(0),
+            next_due.with_timezone(&chrono::Local).format("%Y-%m-%d")
+        );
+    }
+
     Ok(())
 }

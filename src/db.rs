@@ -146,6 +146,11 @@ fn apply_migrations(conn: &mut Connection) -> Result<()> {
                 FOREIGN KEY (task_uuid) REFERENCES tasks(uuid) ON DELETE CASCADE
              );",
         ),
+        M::up(
+            // recur: a recurrence interval string like "daily", "weekly", "2w", "1m", etc.
+            // NULL means the task does not recur.
+            "ALTER TABLE tasks ADD COLUMN recur TEXT;",
+        ),
     ]);
     migrations
         .to_latest(conn)
@@ -180,6 +185,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     let started_str: Option<String> = row.get(12)?;
     let time_spent: i64 = row.get(13)?;
     let estimate_mins: Option<i64> = row.get(14)?;
+    let recur: Option<String> = row.get(15)?;
 
     let uuid = Uuid::parse_str(&uuid_str).unwrap_or_else(|_| Uuid::new_v4());
     let status = match status_str.as_str() {
@@ -211,11 +217,12 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         started_at,
         time_spent,
         estimate_mins,
+        recur,
     })
 }
 
 const TASK_COLUMNS: &str =
-    "uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins";
+    "uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins,recur";
 
 // ── undo ─────────────────────────────────────────────────────────────────────
 
@@ -302,8 +309,8 @@ fn restore_task_row(conn: &Connection, t: &Task) -> Result<()> {
         conn.execute(
             "INSERT INTO tasks (uuid, id, description, project, status, priority, due,
                                 entry, modified, end, tags_json, urgency, started_at, time_spent,
-                                estimate_mins)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                                estimate_mins, recur)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             params![
                 t.uuid.to_string(),
                 t.id,
@@ -320,6 +327,7 @@ fn restore_task_row(conn: &Connection, t: &Task) -> Result<()> {
                 t.started_at.as_ref().map(dt_to_str),
                 t.time_spent,
                 t.estimate_mins,
+                t.recur,
             ],
         )?;
     }
@@ -399,8 +407,8 @@ pub fn insert_task(conn: &Connection, task: &mut Task) -> Result<()> {
     conn.execute(
         "INSERT INTO tasks (uuid, id, description, project, status, priority, due,
                             entry, modified, end, tags_json, urgency, started_at, time_spent,
-                            estimate_mins)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                            estimate_mins, recur)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         params![
             task.uuid.to_string(),
             task.id,
@@ -417,6 +425,7 @@ pub fn insert_task(conn: &Connection, task: &mut Task) -> Result<()> {
             task.started_at.as_ref().map(dt_to_str),
             task.time_spent,
             task.estimate_mins,
+            task.recur,
         ],
     )?;
     conn.execute(
@@ -434,7 +443,7 @@ pub fn insert_task(conn: &Connection, task: &mut Task) -> Result<()> {
 
 pub fn get_task_by_id(conn: &Connection, id: i64) -> Result<Option<Task>> {
     let mut stmt = conn.prepare(
-        "SELECT uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins
+        "SELECT uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins,recur
          FROM tasks WHERE id=?1 AND status='pending' LIMIT 1",
     )?;
     let mut rows = stmt.query_map([id], row_to_task)?;
@@ -444,7 +453,7 @@ pub fn get_task_by_id(conn: &Connection, id: i64) -> Result<Option<Task>> {
 pub fn get_task_by_uuid_prefix(conn: &Connection, prefix: &str) -> Result<Option<Task>> {
     let pattern = format!("{prefix}%");
     let mut stmt = conn.prepare(
-        "SELECT uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins
+        "SELECT uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins,recur
          FROM tasks WHERE uuid LIKE ?1 LIMIT 1",
     )?;
     let mut rows = stmt.query_map([pattern], row_to_task)?;
@@ -466,10 +475,10 @@ pub fn resolve_task(conn: &Connection, id_or_uuid: &str) -> Result<Task> {
 
 pub fn list_tasks(conn: &Connection, project: Option<&str>) -> Result<Vec<Task>> {
     let sql = if project.is_some() {
-        "SELECT uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins
+        "SELECT uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins,recur
          FROM tasks WHERE status='pending' AND project=?1 ORDER BY urgency DESC"
     } else {
-        "SELECT uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins
+        "SELECT uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins,recur
          FROM tasks WHERE status='pending' ORDER BY urgency DESC"
     };
     let mut stmt = conn.prepare(sql)?;
@@ -488,8 +497,8 @@ pub fn update_task(conn: &Connection, task: &Task) -> Result<()> {
     conn.execute(
         "UPDATE tasks SET description=?1, project=?2, status=?3, priority=?4, due=?5,
                          modified=?6, end=?7, tags_json=?8, urgency=?9,
-                         started_at=?10, time_spent=?11, estimate_mins=?12
-         WHERE uuid=?13",
+                         started_at=?10, time_spent=?11, estimate_mins=?12, recur=?13
+         WHERE uuid=?14",
         params![
             task.description,
             task.project,
@@ -503,6 +512,7 @@ pub fn update_task(conn: &Connection, task: &Task) -> Result<()> {
             task.started_at.as_ref().map(dt_to_str),
             task.time_spent,
             task.estimate_mins,
+            task.recur,
             task.uuid.to_string(),
         ],
     )?;
@@ -1254,7 +1264,7 @@ pub fn refresh_urgency(
 ) -> Result<()> {
     let task = {
         let mut stmt = conn.prepare(
-            "SELECT uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins
+            "SELECT uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins,recur
              FROM tasks WHERE uuid=?1",
         )?;
         let mut rows = stmt.query_map([task_uuid.to_string()], row_to_task)?;

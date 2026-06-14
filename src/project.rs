@@ -43,13 +43,14 @@ pub fn project_name_from_root(root: &Path) -> String {
 /// Tokens are only extracted when they appear as leading or trailing words.
 /// Everything between the first non-token and last non-token is the literal description.
 ///
-/// Supported: `project:foo`, `+tag`, `pri:H`
+/// Supported: `project:foo`, `+tag`, `pri:H`, `every:daily`
 #[derive(Debug, Default)]
 pub struct ParsedTokens {
     pub description: String,
     pub project: Option<String>,
     pub tags: Vec<String>,
     pub priority: Option<String>,
+    pub recur: Option<String>,
 }
 
 pub fn parse_add_tokens(args: &[String]) -> ParsedTokens {
@@ -74,6 +75,9 @@ pub fn parse_add_tokens(args: &[String]) -> ParsedTokens {
         } else if let Some(stripped) = tok.to_lowercase().strip_prefix("pri:") {
             result.priority = Some(stripped.to_uppercase());
             remaining.remove(0);
+        } else if let Some(stripped) = tok.to_lowercase().strip_prefix("every:") {
+            result.recur = Some(stripped.to_string());
+            remaining.remove(0);
         } else {
             break;
         }
@@ -93,6 +97,11 @@ pub fn parse_add_tokens(args: &[String]) -> ParsedTokens {
         } else if let Some(stripped) = tok.to_lowercase().strip_prefix("pri:") {
             if result.priority.is_none() {
                 result.priority = Some(stripped.to_uppercase());
+            }
+            remaining.pop();
+        } else if let Some(stripped) = tok.to_lowercase().strip_prefix("every:") {
+            if result.recur.is_none() {
+                result.recur = Some(stripped.to_string());
             }
             remaining.pop();
         } else {

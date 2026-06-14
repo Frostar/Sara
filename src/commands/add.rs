@@ -18,6 +18,7 @@ pub fn run(
     extra_tags: &[String],
     yes: bool,
     llm: bool,
+    recur_override: Option<&str>,
 ) -> Result<()> {
     // Parse inline tokens
     let mut parsed = parse_add_tokens(words);
@@ -34,6 +35,9 @@ pub fn run(
         parsed.priority = Some(p.to_uppercase());
     }
     parsed.tags.extend_from_slice(extra_tags);
+    if let Some(r) = recur_override {
+        parsed.recur = Some(r.to_string());
+    }
 
     // Resolve project
     let (project_name, _path) = if let Some(ref p) = parsed.project {
@@ -169,6 +173,7 @@ pub fn run(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    task.recur = parsed.recur.clone();
 
     // Parse due date
     if !form.due.is_empty() {

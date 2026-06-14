@@ -59,15 +59,17 @@ enum EditField {
     Due,
     Tags,
     Estimate,
+    Recur,
 }
 
-const EDIT_FIELDS: [EditField; 6] = [
+const EDIT_FIELDS: [EditField; 7] = [
     EditField::Description,
     EditField::Project,
     EditField::Priority,
     EditField::Due,
     EditField::Tags,
     EditField::Estimate,
+    EditField::Recur,
 ];
 
 impl EditField {
@@ -79,6 +81,7 @@ impl EditField {
             EditField::Due => "Due",
             EditField::Tags => "Tags",
             EditField::Estimate => "Estimate",
+            EditField::Recur => "Recur",
         }
     }
 }
@@ -485,6 +488,7 @@ fn current_value(task: &Task, field: EditField) -> String {
                 }
             })
             .unwrap_or_default(),
+        EditField::Recur => task.recur.clone().unwrap_or_default(),
     }
 }
 
@@ -517,6 +521,10 @@ fn apply_field(task: &mut Task, field: EditField, value: &str, cfg: &Config) {
         EditField::Priority => {}
         EditField::Estimate => {
             task.estimate_mins = parse_duration_to_mins(value);
+        }
+        EditField::Recur => {
+            let v = value.trim().to_lowercase();
+            task.recur = if v.is_empty() { None } else { Some(v) };
         }
     }
 }

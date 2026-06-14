@@ -59,6 +59,9 @@ pub enum Command {
         /// Enrich with the LLM (priority/due/tags/dependency suggestions). Off by default.
         #[arg(long, visible_alias = "ai")]
         llm: bool,
+        /// Recurrence interval: daily, weekly, monthly, 2w, 3d, 1m, etc.
+        #[arg(long, visible_alias = "recur")]
+        every: Option<String>,
     },
 
     /// Show full details of a task
