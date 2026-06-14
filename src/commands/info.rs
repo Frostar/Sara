@@ -42,6 +42,8 @@ struct Detail {
     urgency_breakdown: Option<crate::db::UrgencyBreakdown>,
     /// Daily activity counts for the task's project (last ~16 weeks).
     activity: std::collections::HashMap<chrono::NaiveDate, u32>,
+    /// Aggregated stats for the project.
+    stats: Option<crate::db::ProjectStats>,
 }
 
 struct BranchOverlap {
@@ -222,6 +224,9 @@ fn load_detail(conn: &Connection, cfg: &Config, task: Task) -> Result<Detail> {
     // Activity heatmap for the project (last 16 weeks)
     let activity = db::activity_counts(conn, 16 * 7, Some(&task.project)).unwrap_or_default();
 
+    // Project stats
+    let stats = db::project_stats(conn, &task.project).ok();
+
     Ok(Detail {
         blocked_by: resolve_ids(db::get_blockers(conn, &task.uuid)?),
         blocking: resolve_ids(db::get_blocking(conn, &task.uuid)?),
@@ -237,6 +242,7 @@ fn load_detail(conn: &Connection, cfg: &Config, task: Task) -> Result<Detail> {
         checklist,
         urgency_breakdown,
         activity,
+        stats,
         task,
     })
 }
@@ -848,12 +854,19 @@ fn render(f: &mut Frame, st: &EditState) {
         .scroll((st.scroll, 0));
     f.render_widget(para, left_area);
 
-    // ── Git branch panel + mini heatmap
+    // ── Git branch panel + stats + mini heatmap
     if let Some(panel) = panel_area {
-        // Split the panel: git on top, heatmap at bottom (9 lines + 2 border = 11)
+        // Three-section right column:
+        //   Git     (top, flexible)
+        //   Stats   (middle, fixed 14)
+        //   Heatmap (bottom, fixed 11)
         let panel_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(4), Constraint::Length(11)])
+            .constraints([
+                Constraint::Min(4),
+                Constraint::Length(14),
+                Constraint::Length(11),
+            ])
             .split(panel);
 
         let git_lines = git_panel_lines(d);
@@ -867,7 +880,8 @@ fn render(f: &mut Frame, st: &EditState) {
             .wrap(Wrap { trim: false });
         f.render_widget(git_para, panel_chunks[0]);
 
-        render_mini_heatmap(f, panel_chunks[1], &d.activity, &d.task.project);
+        render_project_stats(f, panel_chunks[1], d);
+        render_mini_heatmap(f, panel_chunks[2], &d.activity, &d.task.project);
     }
 
     // ── History box (pinned to bottom, above edit bar and footer)
@@ -922,6 +936,101 @@ fn render(f: &mut Frame, st: &EditState) {
 }
 
 /// Build lines for the History box at the bottom of the detail view.
+fn render_project_stats(f: &mut Frame, area: ratatui::layout::Rect, d: &Detail) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Project ")
+        .border_style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let Some(ref s) = d.stats else { return; };
+
+    // Mini bar: fill `width` chars proportionally
+    let bar = |count: u32, total: u32, width: usize| -> String {
+        if total == 0 { return " ".repeat(width); }
+        let filled = ((count as f64 / total as f64) * width as f64).round() as usize;
+        "█".repeat(filled.min(width))
+    };
+
+    let total_ever = s.pending + s.completed_total;
+    let completion_rate = if total_ever > 0 {
+        format!("{:.0}%", s.completed_total as f64 / total_ever as f64 * 100.0)
+    } else {
+        "—".to_string()
+    };
+
+    let w = inner.width.saturating_sub(2) as usize;
+    let bar_w = w.saturating_sub(16).min(10).max(3);
+
+    let mut lines: Vec<Line> = vec![];
+
+    // Status counts
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:<10}", "Pending"), Style::default().fg(Color::Gray)),
+        Span::raw(format!("{:>3}", s.pending)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:<10}", "Active"), Style::default().fg(Color::Gray)),
+        Span::styled(format!("{:>3}", s.active), Style::default().fg(if s.active > 0 { Color::Green } else { Color::Reset })),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:<10}", "Done"), Style::default().fg(Color::Gray)),
+        Span::raw(format!("{:>3}", s.completed_total)),
+        Span::styled(format!("  {}", completion_rate), Style::default().fg(Color::DarkGray)),
+    ]));
+
+    lines.push(Line::from(Span::styled("  ─────────────", Style::default().fg(Color::DarkGray))));
+
+    // Priority mini bars
+    let pri_total = s.pending.max(1);
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:<5}", "H"), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{:<bar_w$}", bar(s.high, pri_total, bar_w)), Style::default().fg(Color::Red)),
+        Span::styled(format!(" {}", s.high), Style::default().fg(Color::DarkGray)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:<5}", "M"), Style::default().fg(Color::Yellow)),
+        Span::styled(format!("{:<bar_w$}", bar(s.medium, pri_total, bar_w)), Style::default().fg(Color::Yellow)),
+        Span::styled(format!(" {}", s.medium), Style::default().fg(Color::DarkGray)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:<5}", "L"), Style::default().fg(Color::Green)),
+        Span::styled(format!("{:<bar_w$}", bar(s.low, pri_total, bar_w)), Style::default().fg(Color::Green)),
+        Span::styled(format!(" {}", s.low), Style::default().fg(Color::DarkGray)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:<5}", "—"), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{:<bar_w$}", bar(s.no_pri, pri_total, bar_w)), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {}", s.no_pri), Style::default().fg(Color::DarkGray)),
+    ]));
+
+    lines.push(Line::from(Span::styled("  ─────────────", Style::default().fg(Color::DarkGray))));
+
+    // Due status
+    if s.overdue > 0 {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<10}", "Overdue"), Style::default().fg(Color::Red)),
+            Span::styled(format!("{:>3}", s.overdue), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        ]));
+    }
+    if s.due_today > 0 {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<10}", "Today"), Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{:>3}", s.due_today), Style::default().fg(Color::Yellow)),
+        ]));
+    }
+    let due_later = s.due_week.saturating_sub(s.due_today);
+    if due_later > 0 {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<10}", "This week"), Style::default().fg(Color::Gray)),
+            Span::raw(format!("{:>3}", due_later)),
+        ]));
+    }
+
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 fn render_mini_heatmap(
     f: &mut Frame,
     area: ratatui::layout::Rect,

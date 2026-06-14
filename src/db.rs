@@ -1874,3 +1874,69 @@ pub fn activity_stats(conn: &Connection, project: Option<&str>) -> Result<(u32, 
 
     Ok((created, completed, current_streak, longest_streak))
 }
+
+// ── project stats ─────────────────────────────────────────────────────────────
+
+pub struct ProjectStats {
+    pub pending: u32,
+    pub active: u32,
+    pub completed_total: u32,
+    pub high: u32,
+    pub medium: u32,
+    pub low: u32,
+    pub no_pri: u32,
+    pub overdue: u32,
+    pub due_today: u32,
+    pub due_week: u32,
+}
+
+pub fn project_stats(conn: &Connection, project: &str) -> Result<ProjectStats> {
+    let now_str = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    let today_str = Utc::now().format("%Y-%m-%d").to_string();
+    let week_str = (Utc::now() + chrono::Duration::days(7))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let pending: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending'",
+        [project], |r| r.get(0),
+    )?;
+    let active: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND started_at IS NOT NULL",
+        [project], |r| r.get(0),
+    )?;
+    let completed_total: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='completed'",
+        [project], |r| r.get(0),
+    )?;
+    let high: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='H'",
+        [project], |r| r.get(0),
+    )?;
+    let medium: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='M'",
+        [project], |r| r.get(0),
+    )?;
+    let low: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='L'",
+        [project], |r| r.get(0),
+    )?;
+    let no_pri: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority IS NULL",
+        [project], |r| r.get(0),
+    )?;
+    let overdue: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND due IS NOT NULL AND due < ?2",
+        rusqlite::params![project, now_str], |r| r.get(0),
+    )?;
+    let due_today: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND due IS NOT NULL AND substr(due,1,10)=?2",
+        rusqlite::params![project, today_str], |r| r.get(0),
+    )?;
+    let due_week: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND due IS NOT NULL AND due >= ?2 AND substr(due,1,10) <= ?3",
+        rusqlite::params![project, now_str, week_str], |r| r.get(0),
+    )?;
+
+    Ok(ProjectStats { pending, active, completed_total, high, medium, low, no_pri, overdue, due_today, due_week })
+}
