@@ -9,6 +9,7 @@ pub fn collect_project_files(root: &Path) -> Vec<String> {
     let walker = WalkBuilder::new(root)
         .hidden(false)
         .follow_links(false)
+        .add_custom_ignore_filename(".saraignore")
         .add_custom_ignore_filename(".tkignore")
         .build();
 
@@ -52,6 +53,7 @@ pub fn collect_project_entries(root: &Path) -> Vec<String> {
     let walker = WalkBuilder::new(root)
         .hidden(false)
         .follow_links(false)
+        .add_custom_ignore_filename(".saraignore")
         .add_custom_ignore_filename(".tkignore")
         .build();
 

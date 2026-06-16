@@ -3,7 +3,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use rusqlite_migration::{Migrations, M};
 
 use crate::config;
-use crate::model::{Priority, Project, Status, Task};
+use crate::model::{Item, Priority, Project, Status, Task};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -150,6 +150,36 @@ fn apply_migrations(conn: &mut Connection) -> Result<()> {
             // recur: a recurrence interval string like "daily", "weekly", "2w", "1m", etc.
             // NULL means the task does not recur.
             "ALTER TABLE tasks ADD COLUMN recur TEXT;",
+        ),
+        M::up(
+            "CREATE TABLE IF NOT EXISTS items (
+                uuid        TEXT PRIMARY KEY,
+                kind        TEXT NOT NULL,
+                display_id  INTEGER,
+                title       TEXT NOT NULL,
+                url         TEXT,
+                project     TEXT,
+                tags_json   TEXT NOT NULL DEFAULT '[]',
+                path        TEXT NOT NULL,
+                summary     TEXT,
+                body        TEXT NOT NULL DEFAULT '',
+                created     TEXT NOT NULL,
+                modified    TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'active'
+            );
+            CREATE TABLE IF NOT EXISTS events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                action      TEXT NOT NULL,
+                ref_uuid    TEXT,
+                kind        TEXT,
+                tags_json   TEXT,
+                project     TEXT,
+                at          TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS embeddings (
+                ref_uuid    TEXT PRIMARY KEY,
+                vector_json TEXT NOT NULL
+            );",
         ),
     ]);
     migrations
@@ -736,7 +766,7 @@ impl DepInfo {
 /// Dependency state for every task that has any, keyed by task uuid string.
 /// Only pending tasks count as live blockers/dependents, matching the
 /// semantics of `get_blockers`/`get_blocking`. Computed in two batch queries
-/// so `tk list` stays O(1) in round-trips regardless of task count.
+/// so `sara list` stays O(1) in round-trips regardless of task count.
 pub fn dep_info_by_task(
     conn: &Connection,
 ) -> Result<std::collections::HashMap<String, DepInfo>> {
@@ -2069,4 +2099,193 @@ pub fn project_stats(conn: &Connection, project: &str) -> Result<ProjectStats> {
     )?;
 
     Ok(ProjectStats { pending, active, completed_total, high, medium, low, no_pri, overdue, due_today, due_week })
+}
+
+// ── items (notes & links) ───────────────────────────────────────────────────
+
+fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
+    let tags_json: String = row.get(6)?;
+    let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+    Ok(Item {
+        uuid: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap_or_else(|_| Uuid::new_v4()),
+        display_id: row.get(2)?,
+        kind: row.get(1)?,
+        title: row.get(3)?,
+        url: row.get(4)?,
+        project: row.get(5)?,
+        tags,
+        path: Some(row.get(7)?),
+        summary: row.get(8)?,
+        body: row.get(9)?,
+        created: str_to_dt(&row.get::<_, String>(10)?).unwrap_or_else(|_| Utc::now()),
+        modified: str_to_dt(&row.get::<_, String>(11)?).unwrap_or_else(|_| Utc::now()),
+        status: row.get(12)?,
+    })
+}
+
+fn next_item_display_id(conn: &Connection, kind: &str) -> Result<i64> {
+    let max: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(display_id), 0) FROM items WHERE kind = ?1 AND status = 'active'",
+            [kind],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    Ok(max + 1)
+}
+
+pub fn insert_item(conn: &Connection, item: &mut Item) -> Result<()> {
+    if item.display_id.is_none() {
+        item.display_id = Some(next_item_display_id(conn, &item.kind)?);
+    }
+    let path = item
+        .path
+        .clone()
+        .context("item path must be set before insert")?;
+    let tags_json = serde_json::to_string(&item.tags)?;
+    conn.execute(
+        "INSERT INTO items (uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        rusqlite::params![
+            item.uuid.to_string(),
+            item.kind,
+            item.display_id,
+            item.title,
+            item.url,
+            item.project,
+            tags_json,
+            path,
+            item.summary,
+            item.body,
+            dt_to_str(&item.created),
+            dt_to_str(&item.modified),
+            item.status,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn list_items(conn: &Connection, kind: Option<&str>) -> Result<Vec<Item>> {
+    let mut items = vec![];
+    if let Some(k) = kind {
+        let mut stmt = conn.prepare(
+            "SELECT uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status
+             FROM items WHERE status = 'active' AND kind = ?1 ORDER BY display_id",
+        )?;
+        let rows = stmt.query_map([k], row_to_item)?;
+        for r in rows {
+            items.push(r?);
+        }
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status
+             FROM items WHERE status = 'active' ORDER BY kind, display_id",
+        )?;
+        let rows = stmt.query_map([], row_to_item)?;
+        for r in rows {
+            items.push(r?);
+        }
+    }
+    Ok(items)
+}
+
+pub fn get_item_by_handle(conn: &Connection, handle: &str) -> Result<Item> {
+    let handle = handle.trim().to_lowercase();
+    let (kind, id_str) = if let Some(rest) = handle.strip_prefix('n') {
+        ("note", rest)
+    } else if let Some(rest) = handle.strip_prefix('l') {
+        ("link", rest)
+    } else {
+        anyhow::bail!("Item handle must start with n or l (e.g. n1, l2)");
+    };
+    let id: i64 = id_str.parse().context("Invalid item id")?;
+    conn.query_row(
+        "SELECT uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status
+         FROM items WHERE kind = ?1 AND display_id = ?2 AND status = 'active'",
+        rusqlite::params![kind, id],
+        row_to_item,
+    )
+    .map_err(|_| anyhow::anyhow!("No active {kind} with id {id}"))
+}
+
+pub fn update_item(conn: &Connection, item: &Item) -> Result<()> {
+    let tags_json = serde_json::to_string(&item.tags)?;
+    conn.execute(
+        "UPDATE items SET title=?2, url=?3, project=?4, tags_json=?5, path=?6, summary=?7, body=?8, modified=?9
+         WHERE uuid=?1",
+        rusqlite::params![
+            item.uuid.to_string(),
+            item.title,
+            item.url,
+            item.project,
+            tags_json,
+            item.path,
+            item.summary,
+            item.body,
+            dt_to_str(&item.modified),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn archive_item(conn: &Connection, uuid: &Uuid) -> Result<()> {
+    conn.execute(
+        "UPDATE items SET status='archived', modified=?2 WHERE uuid=?1",
+        rusqlite::params![uuid.to_string(), dt_to_str(&Utc::now())],
+    )?;
+    Ok(())
+}
+
+pub fn record_event(
+    conn: &Connection,
+    action: &str,
+    ref_uuid: Option<&Uuid>,
+    kind: Option<&str>,
+    tags: &[String],
+    project: Option<&str>,
+) -> Result<()> {
+    let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
+    conn.execute(
+        "INSERT INTO events (action, ref_uuid, kind, tags_json, project, at) VALUES (?1,?2,?3,?4,?5,?6)",
+        rusqlite::params![
+            action,
+            ref_uuid.map(|u| u.to_string()),
+            kind,
+            tags_json,
+            project,
+            dt_to_str(&Utc::now()),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn recent_events(conn: &Connection, limit: i64) -> Result<Vec<(String, Option<String>, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT action, kind, at FROM events ORDER BY id DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn upsert_embedding(conn: &Connection, ref_uuid: &Uuid, vector: &[f32]) -> Result<()> {
+    let vector_json = serde_json::to_string(vector)?;
+    conn.execute(
+        "INSERT INTO embeddings (ref_uuid, vector_json) VALUES (?1, ?2)
+         ON CONFLICT(ref_uuid) DO UPDATE SET vector_json = excluded.vector_json",
+        rusqlite::params![ref_uuid.to_string(), vector_json],
+    )?;
+    Ok(())
+}
+
+pub fn all_embeddings(conn: &Connection) -> Result<Vec<(String, Vec<f32>)>> {
+    let mut stmt = conn.prepare("SELECT ref_uuid, vector_json FROM embeddings")?;
+    let rows = stmt.query_map([], |r| {
+        let uuid: String = r.get(0)?;
+        let json: String = r.get(1)?;
+        let vec: Vec<f32> = serde_json::from_str(&json).unwrap_or_default();
+        Ok((uuid, vec))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }

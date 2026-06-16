@@ -1,12 +1,12 @@
 [package]
-name = "tk"
+name = "sara"
 version = "0.1.0"
 edition = "2024"
-description = "A folder-aware, LLM-assisted task manager"
+description = "Sara — a personal assistant with a folder-aware task manager"
 license = "MIT"
 
 [[bin]]
-name = "tk"
+name = "sara"
 path = "src/main.rs"
 
 [dependencies]
@@ -29,5 +29,6 @@ thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 toml = "0.8"
+serde_yaml = "0.9"
 nucleo-matcher = "0.3"
 interim = { version = "0.1", features = ["chrono"] }

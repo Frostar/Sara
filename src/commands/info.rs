@@ -33,7 +33,7 @@ struct Detail {
     history: Vec<crate::db::HistoryEntry>,
     /// Absolute project root, used to open relative file paths.
     project_root: Option<std::path::PathBuf>,
-    /// Persisted branch snapshot (set via `tk addbranch`, populated on `tk stop`).
+    /// Persisted branch snapshot (set via `sara addbranch`, populated on `sara stop`).
     branch: Option<crate::db::BranchRecord>,
     /// Tasks in the same project whose snapshot files overlap with this task's.
     overlaps: Vec<BranchOverlap>,
@@ -1357,11 +1357,11 @@ fn git_panel_lines(d: &Detail) -> Vec<Line<'static>> {
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Run: tk <id> addbranch",
+            "  Run: sara <id> addbranch",
             Style::default().fg(Color::Gray),
         )));
         lines.push(Line::from(Span::styled(
-            "  Then: tk stop <id> to snapshot.",
+            "  Then: sara stop <id> to snapshot.",
             Style::default().fg(Color::Gray),
         )));
         return lines;
@@ -1394,7 +1394,7 @@ fn git_panel_lines(d: &Detail) -> Vec<Line<'static>> {
                 Style::default().fg(Color::DarkGray),
             )));
             lines.push(Line::from(Span::styled(
-                "  Run: tk stop <id>",
+                "  Run: sara stop <id>",
                 Style::default().fg(Color::Gray),
             )));
         }

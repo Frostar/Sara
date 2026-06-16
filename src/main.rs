@@ -1,15 +1,19 @@
+mod capture;
 mod cli;
 mod commands;
 mod config;
 mod dates;
 mod db;
+mod embed;
 mod enrich;
 mod files;
 mod git;
+mod learn;
 mod llm;
 mod model;
 mod project;
 mod tui;
+mod vault;
 
 use anyhow::Result;
 use clap::CommandFactory;
@@ -17,12 +21,21 @@ use clap::Parser;
 use std::io;
 use std::process::ExitCode;
 
-use cli::{Cli, Command, DepAction};
+use cli::{Cli, Command, DepAction, ProjectAction};
+
+fn is_item_handle(id: &str) -> bool {
+    let id = id.trim().to_lowercase();
+    if id.starts_with('n') || id.starts_with('l') {
+        id[1..].chars().all(|c| c.is_ascii_digit()) && !id[1..].is_empty()
+    } else {
+        false
+    }
+}
 
 fn run() -> Result<()> {
     // Taskwarrior-style shorthands:
-    //   `tk <id>`          -> `tk info <id>`
-    //   `tk <id> <action>` -> `tk <action> <id>`   (start/stop/done/delete/modify/info/dep)
+    //   `sara <id>`          -> `sara info <id>`
+    //   `sara <id> <action>` -> `sara <action> <id>`   (start/stop/done/delete/modify/info/dep)
     let mut args: Vec<String> = std::env::args().collect();
     if args.len() == 2 && args[1].parse::<i64>().is_ok() {
         args.insert(1, "info".to_string());
@@ -32,62 +45,96 @@ fn run() -> Result<()> {
             "attach", "pr", "link", "addbranch",
         ];
         if ACTIONS.contains(&args[2].as_str()) {
-            let id = args.remove(1); // remove id
-            let action = args.remove(1); // remove action (now at idx 1)
+            let id = args.remove(1);
+            let action = args.remove(1);
             args.insert(1, action);
             args.insert(2, id);
         }
     }
-    // Human-readable label for the command, captured before clap consumes args.
     let command_label = args[1..].join(" ");
     let cli = Cli::parse_from(args);
 
-    // Provider command only touches config — no DB needed
     if let Command::Provider { ref action } = cli.command {
         return commands::provider::run(action);
     }
 
-    let cfg = config::load()?;
+    let mut cfg = config::load()?;
+
+    if matches!(cli.command, Command::Init { .. }) {
+        if let Command::Init { path } = cli.command {
+            vault::init_store(&mut cfg, path)?;
+        }
+        return Ok(());
+    }
+
     let mut conn = db::open()?;
 
-    // Snapshot task writes so this invocation can be reverted later. `undo`
-    // itself is excluded so it never records (or undoes) its own work.
     if !matches!(cli.command, Command::Undo) {
         db::begin_undo_batch(&command_label);
     }
 
     match cli.command {
-        Command::Init { name, goal, yes, no_llm } => {
-            commands::init::run(
-                &conn,
-                &cfg,
-                name.as_deref(),
-                goal.as_deref(),
-                yes,
-                no_llm,
-            )?;
-        }
+        Command::Project { action } => match action {
+            ProjectAction::Init { name, goal, yes, no_llm } => {
+                commands::init::run(
+                    &conn,
+                    &cfg,
+                    name.as_deref(),
+                    goal.as_deref(),
+                    yes,
+                    no_llm,
+                )?;
+            }
+        },
 
         Command::Reset { project, yes } => {
             commands::reset::run(&mut conn, &cfg, project.as_deref(), yes)?;
         }
 
-        Command::Add { words, project, priority, tag, yes, llm, every } => {
-            commands::add::run(
-                &conn,
-                &cfg,
-                &words,
-                project.as_deref(),
-                priority.as_deref(),
-                &tag,
-                yes,
-                llm,
-                every.as_deref(),
-            )?;
+        Command::Add {
+            words,
+            task,
+            note,
+            capture_link,
+            project,
+            priority,
+            tag,
+            yes,
+            llm,
+            no_llm,
+            every,
+        } => {
+            if words.is_empty() && !note && !capture_link {
+                anyhow::bail!("Provide content to add, or use --note / --link");
+            }
+            let text = words.join(" ");
+            if capture_link || (capture::is_url(&text) && !task && !note) {
+                capture::capture_link(&conn, &cfg, &text, None)?;
+            } else if note {
+                capture::capture_note(&conn, &cfg, &text)?;
+            } else {
+                commands::add::run(
+                    &conn,
+                    &cfg,
+                    &words,
+                    project.as_deref(),
+                    priority.as_deref(),
+                    &tag,
+                    yes,
+                    llm,
+                    every.as_deref(),
+                )?;
+                db::record_event(&conn, "capture", None, Some("task"), &tag, project.as_deref())?;
+            }
+            let _ = no_llm;
         }
 
         Command::Info { id } => {
-            commands::info::run(&conn, &cfg, &id)?;
+            if is_item_handle(&id) {
+                commands::item::run(&conn, &cfg, &id)?;
+            } else {
+                commands::info::run(&conn, &cfg, &id)?;
+            }
         }
 
         Command::Annotate { id, text } => {
@@ -110,8 +157,8 @@ fn run() -> Result<()> {
             commands::annotate::unlink(&conn, link_id)?;
         }
 
-        Command::List { all, project } => {
-            commands::list::run(&conn, &cfg, all, project.as_deref())?;
+        Command::List { all, items, project } => {
+            commands::list::run(&conn, &cfg, all, items, project.as_deref())?;
         }
 
         Command::Start { id } => {
@@ -124,6 +171,7 @@ fn run() -> Result<()> {
 
         Command::Done { id, force } => {
             commands::done::run(&conn, &cfg, &id, force)?;
+            db::record_event(&conn, "complete", None, Some("task"), &[], None)?;
         }
 
         Command::Modify { id, no_llm } => {
@@ -131,7 +179,11 @@ fn run() -> Result<()> {
         }
 
         Command::Delete { id, yes } => {
-            commands::delete::run(&conn, &id, yes)?;
+            if is_item_handle(&id) {
+                commands::item::delete_item(&conn, &cfg, &id)?;
+            } else {
+                commands::delete::run(&conn, &id, yes)?;
+            }
         }
 
         Command::Dep { id, action } => match action {
@@ -170,7 +222,6 @@ fn run() -> Result<()> {
             } else if let Some(p) = project {
                 Some(p)
             } else {
-                // Auto-detect from git root
                 let cwd = std::env::current_dir().unwrap_or_default();
                 crate::project::find_git_root(&cwd)
                     .map(|root| crate::project::project_name_from_root(&root))
@@ -181,8 +232,12 @@ fn run() -> Result<()> {
         Command::Paths => {
             let cfg_path = config::config_path()?;
             let db_path = config::db_path()?;
+            let store = config::vault_path(&cfg).ok();
             println!("Config: {}", cfg_path.display());
             println!("Database: {}", db_path.display());
+            if let Some(s) = store {
+                println!("Store: {}", s.display());
+            }
         }
 
         Command::Completions { shell } => {
@@ -190,6 +245,20 @@ fn run() -> Result<()> {
             let name = cmd.get_name().to_string();
             clap_complete::generate(shell, &mut cmd, name, &mut io::stdout());
         }
+
+        Command::Search { query } => {
+            commands::search::run(&conn, &cfg, &query)?;
+        }
+
+        Command::Brief => {
+            commands::brief::run(&conn, &cfg)?;
+        }
+
+        Command::Learn => {
+            commands::learn_cmd::run(&conn, &cfg)?;
+        }
+
+        Command::Init { .. } => unreachable!(),
     }
 
     Ok(())

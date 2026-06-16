@@ -1,13 +1,16 @@
-# tk — a folder-aware, LLM-assisted task manager
+# Sara — a personal assistant (built on tk)
 
-`tk` is a Taskwarrior-inspired command-line task manager written in Rust. It knows
+`Sara` is a personal assistant with a folder-aware task manager at its core. She knows
 which Git project you're standing in, ranks your work with a transparent urgency
 model, tracks time, links tasks to branches, and (optionally) uses an LLM to
 enrich new tasks with a priority, due date, tags, dependencies, and relevant
 files.
 
-Everything lives in a single SQLite database in your home directory — **nothing
-is ever written into your repositories.**
+Task data lives in a SQLite database in your home directory — **nothing
+is ever written into your repositories.** Sara's private knowledge store (notes,
+links, and her learned profile) lives in a `Sara/` folder you don't need to browse.
+
+> **Migrating from tk:** On first run, Sara imports your existing tk config and tasks automatically.
 
 ```text
      ID  PRI   PROJECT           DUE              URG  DEPS              DESCRIPTION
@@ -51,15 +54,15 @@ is ever written into your repositories.**
 
 ## Highlights
 
-- **Folder-aware** — `tk` auto-detects the current Git project and scopes `tk list` to it by default.
-- **Transparent urgency** — a Taskwarrior-style scoring model decides ordering; `tk info` shows the exact breakdown.
+- **Folder-aware** — `sara` auto-detects the current Git project and scopes `sara list` to it by default.
+- **Transparent urgency** — a Taskwarrior-style scoring model decides ordering; `sara info` shows the exact breakdown.
 - **Interactive TUI** — a ratatui review form for adding/editing, and a rich detail view for everything else.
 - **Dependencies** — block tasks on each other, with cycle detection and an at-a-glance `DEPS` column.
-- **Time tracking** — `tk start` / `tk stop` accumulate active time, with optional estimates.
+- **Time tracking** — `sara start` / `sara stop` accumulate active time, with optional estimates.
 - **Git integration** — tie a task to a branch and snapshot the files it touched.
 - **Full history** — every change (field edits, deps, files, checklist, links, comments, timer) is recorded.
 - **Optional LLM** — enrich new tasks locally with Ollama, or via OpenAI / Anthropic / Azure / MLX.
-- **Single SQLite file** — easy to back up, inspect, or sync.
+- **Single SQLite file** — easy to back up; Sara's markdown store is separate.
 
 ---
 
@@ -84,24 +87,24 @@ ollama serve &        # start the server
 ollama pull qwen2.5   # default model (good structured-output quality)
 ```
 
-`tk` works fine without any LLM — enrichment is opt-in (`--ai`), so you only pay
+`sara` works fine without any LLM — enrichment is opt-in (`--ai`), so you only pay
 the latency when you ask for it.
 
 ### 2 — Build & install
 
 ```bash
-git clone <this repo>
-cd tk
+git clone https://github.com/Abarbesgaard/Sara
+cd Sara
 cargo install --path .
 ```
 
-This compiles the binary and places it at `~/.cargo/bin/tk`. Make sure
+This compiles the binary and places it at `~/.cargo/bin/sara`. Make sure
 `~/.cargo/bin` is on your `PATH` (the Rust installer usually handles this):
 
 ```bash
 echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
 source ~/.zshrc
-tk --version
+sara --version
 ```
 
 ---
@@ -109,31 +112,36 @@ tk --version
 ## Quick start
 
 ```bash
+# Initialize Sara's private store (creates Sara/ in the current directory)
+sara init
+
 # Step into a Git repo and create its project profile
 cd ~/my-project
-tk init
+sara project init
 
 # Add a task (opens the interactive review form)
-tk add "implement user authentication"
+sara add "implement user authentication"
 
 # Add quickly, no form, with an inline priority token
-tk add "fix login bug" pri:H --yes
+sara add "fix login bug" pri:H --yes
 
-# Add and let the LLM suggest priority/due/tags/files
-tk add "redesign the rate limiter" --ai
+# Capture a note or link into Sara's store
+sara add --note "meeting notes from standup"
+sara add --link https://example.com
 
 # See what to work on (current project, ranked by urgency)
-tk list
+sara list --items   # include notes & links
 
 # Inspect / edit a task interactively
-tk info 1
+sara info 1
+sara info n1        # view note #1
 
 # Start the clock, do the work, stop it
-tk start 1
-tk stop 1
+sara start 1
+sara stop 1
 
 # Complete it
-tk done 1
+sara done 1
 ```
 
 ---
@@ -418,8 +426,8 @@ A config file is created with sensible defaults on first run.
 
 | OS    | Path                                            |
 |-------|-------------------------------------------------|
-| macOS | `~/Library/Application Support/tk/config.toml`  |
-| Linux | `~/.config/tk/config.toml`                      |
+| macOS | `~/Library/Application Support/sara/config.toml`  |
+| Linux | `~/.config/sara/config.toml`                      |
 
 Full example:
 
@@ -519,8 +527,8 @@ tk completions fish > ~/.config/fish/completions/tk.fish
 
 | What     | macOS                                          | Linux                        |
 |----------|------------------------------------------------|------------------------------|
-| Database | `~/Library/Application Support/tk/tasks.db`     | `~/.local/share/tk/tasks.db` |
-| Config   | `~/Library/Application Support/tk/config.toml`  | `~/.config/tk/config.toml`   |
+| Database | `~/Library/Application Support/sara/tasks.db`     | `~/.local/share/sara/tasks.db` |
+| Config   | `~/Library/Application Support/sara/config.toml`  | `~/.config/sara/config.toml`   |
 
 Run `tk paths` to see the exact locations on your machine.
 
@@ -558,15 +566,15 @@ Run `tk help` or `tk <command> --help` for full options.
 ## Uninstall
 
 ```bash
-cargo uninstall tk
+cargo uninstall sara
 ```
 
 Remove data and config:
 
 ```bash
 # macOS
-rm -rf ~/Library/Application\ Support/tk/
+rm -rf ~/Library/Application\ Support/sara/
 
 # Linux
-rm -rf ~/.config/tk/ ~/.local/share/tk/
+rm -rf ~/.config/sara/ ~/.local/share/sara/
 ```

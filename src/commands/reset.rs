@@ -39,7 +39,7 @@ pub fn run(
         println!(
             "This will permanently delete project '{name}':\n  \
              • {task_count} task(s) and all their files, links, comments and history\n  \
-             • the project profile (you'll need to run `tk init` again)"
+             • the project profile (you'll need to run `sara project init` again)"
         );
         print!("Type the project name to confirm: ");
         io::stdout().flush()?;
@@ -53,6 +53,6 @@ pub fn run(
 
     let deleted = crate::db::reset_project(conn, &name)?;
     println!("✔ Reset project '{name}': removed {deleted} task(s) and its profile.");
-    println!("Run `tk init` to set it up again.");
+    println!("Run `sara project init` to set it up again.");
     Ok(())
 }

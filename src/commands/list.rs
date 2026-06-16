@@ -21,6 +21,7 @@ pub fn run(
     conn: &Connection,
     cfg: &Config,
     all: bool,
+    show_items: bool,
     project_filter: Option<&str>,
 ) -> Result<()> {
     let no_color = std::env::var("NO_COLOR").is_ok();
@@ -193,6 +194,27 @@ pub fn run(
         println!("{summary}");
     } else {
         println!("{DIM}{summary}{RESET}");
+    }
+
+    if show_items {
+        let items = db::list_items(conn, None)?;
+        if !items.is_empty() {
+            println!();
+            if no_color {
+                println!("NOTES & LINKS");
+            } else {
+                println!("{BOLD}NOTES & LINKS{RESET}");
+            }
+            for item in &items {
+                let kind_label = if item.kind == "link" { "link" } else { "note" };
+                println!(
+                    "  {} {:<4}  {}",
+                    item.handle(),
+                    kind_label,
+                    truncate(&item.title, 60)
+                );
+            }
+        }
     }
 
     Ok(())

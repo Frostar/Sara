@@ -18,7 +18,7 @@ pub fn run(conn: &Connection, id_or_uuid: &str, clear: bool) -> Result<()> {
         .and_then(|p| p.path)
         .with_context(|| {
             format!(
-                "Project '{}' has no recorded path. Make sure you've run `tk init` inside a git repo.",
+                "Project '{}' has no recorded path. Make sure you've run `sara project init` inside a git repo.",
                 task.project
             )
         })?;
@@ -35,6 +35,6 @@ pub fn run(conn: &Connection, id_or_uuid: &str, clear: bool) -> Result<()> {
         task.id.unwrap_or(0),
         branch
     );
-    println!("Run `tk stop {}` to snapshot changed files.", task.id.unwrap_or(0));
+    println!("Run `sara stop {}` to snapshot changed files.", task.id.unwrap_or(0));
     Ok(())
 }

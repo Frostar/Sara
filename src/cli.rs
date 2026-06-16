@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "tk",
-    about = "A folder-aware, LLM-assisted task manager",
+    name = "sara",
+    about = "Sara — a personal assistant with a folder-aware task manager",
     version
 )]
 pub struct Cli {
@@ -13,23 +14,20 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Initialize (or update) the current project profile
+    /// Initialize Sara's private knowledge store (creates Sara/ with PARA folders)
     Init {
-        /// Override the project name
+        /// Store location (defaults to ./Sara in the current directory)
         #[arg(long)]
-        name: Option<String>,
-        /// Set the project goal directly (skips prompt)
-        #[arg(long)]
-        goal: Option<String>,
-        /// Accept all detected/LLM values non-interactively
-        #[arg(short, long)]
-        yes: bool,
-        /// Skip LLM task seeding
-        #[arg(long)]
-        no_llm: bool,
+        path: Option<PathBuf>,
     },
 
-    /// Nuke a project: delete all its tasks and profile (run `tk init` to recreate)
+    /// Git project profile commands
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
+
+    /// Nuke a project: delete all its tasks and profile (run `sara project init` to recreate)
     Reset {
         /// Project to reset (defaults to the current project)
         #[arg(long, short)]
@@ -39,15 +37,24 @@ pub enum Command {
         yes: bool,
     },
 
-    /// Add a new task
+    /// Add a task, note, or link to Sara's store
     Add {
-        /// Task description and optional inline tokens (project:x +tag pri:H)
-        #[arg(trailing_var_arg = true, required = true)]
+        /// Content: task description, note text, or URL (auto-detected)
+        #[arg(trailing_var_arg = true)]
         words: Vec<String>,
+        /// Add as a task (default for plain text; same as legacy `tk add`)
+        #[arg(long, conflicts_with_all = ["note", "capture_link"])]
+        task: bool,
+        /// Add as a note in Sara's store
+        #[arg(long, conflicts_with_all = ["task", "capture_link"])]
+        note: bool,
+        /// Add as a link in Sara's store
+        #[arg(long, name = "link", conflicts_with_all = ["task", "note"])]
+        capture_link: bool,
         /// Override project
         #[arg(long, short)]
         project: Option<String>,
-        /// Override priority (H/M/L)
+        /// Override priority (H/M/L) — tasks only
         #[arg(long)]
         priority: Option<String>,
         /// Tag (repeatable)
@@ -59,14 +66,17 @@ pub enum Command {
         /// Enrich with the LLM (priority/due/tags/dependency suggestions). Off by default.
         #[arg(long, visible_alias = "ai")]
         llm: bool,
+        /// Skip LLM enrichment for notes/links
+        #[arg(long)]
+        no_llm: bool,
         /// Recurrence interval: daily, weekly, monthly, 2w, 3d, 1m, etc.
         #[arg(long, visible_alias = "recur")]
         every: Option<String>,
     },
 
-    /// Show full details of a task
+    /// Show full details of a task (id) or note/link (n1, l2)
     Info {
-        /// Task id or uuid prefix
+        /// Task id, uuid prefix, or item handle (n1, l2)
         id: String,
     },
 
@@ -80,7 +90,7 @@ pub enum Command {
         text: Vec<String>,
     },
 
-    /// Remove a comment by its number (see `tk info`)
+    /// Remove a comment by its number (see `sara info`)
     #[command(visible_alias = "uncomment")]
     Denotate {
         /// Comment id (the number shown in the detail view)
@@ -107,17 +117,20 @@ pub enum Command {
         label: Option<String>,
     },
 
-    /// Remove a link by its number (see `tk info`)
+    /// Remove a link by its number (see `sara info`)
     Unlink {
         /// Link id (the number shown in the detail view)
         link_id: i64,
     },
 
-    /// List tasks
+    /// List tasks and optionally notes/links
     List {
         /// Show tasks for all projects (default: current project only)
         #[arg(short, long)]
         all: bool,
+        /// Also list notes and links from Sara's store
+        #[arg(long)]
+        items: bool,
         /// Filter by project name
         #[arg(long)]
         project: Option<String>,
@@ -170,7 +183,7 @@ pub enum Command {
         action: DepAction,
     },
 
-    /// Tie the currently active git branch to a task (snapshot on tk stop)
+    /// Tie the currently active git branch to a task (snapshot on sara stop)
     Addbranch {
         /// Task id or uuid prefix
         id: String,
@@ -216,6 +229,37 @@ pub enum Command {
         /// Shell type
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+
+    /// Search Sara's store by meaning (requires Ollama embeddings)
+    Search {
+        /// Search query
+        query: String,
+    },
+
+    /// Surface what's most relevant right now
+    Brief,
+
+    /// Rebuild Sara's learned profile from recent behavior
+    Learn,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectAction {
+    /// Initialize (or update) the current git project profile
+    Init {
+        /// Override the project name
+        #[arg(long)]
+        name: Option<String>,
+        /// Set the project goal directly (skips prompt)
+        #[arg(long)]
+        goal: Option<String>,
+        /// Accept all detected/LLM values non-interactively
+        #[arg(short, long)]
+        yes: bool,
+        /// Skip LLM task seeding
+        #[arg(long)]
+        no_llm: bool,
     },
 }
 
@@ -264,4 +308,27 @@ pub enum DepAction {
     },
     /// List dependencies of this task
     List,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_name_is_sara() {
+        let cmd = Cli::command();
+        assert_eq!(cmd.get_name(), "sara");
+    }
+
+    #[test]
+    fn cli_has_core_task_commands() {
+        let cmd = Cli::command();
+        for name in ["add", "list", "info", "done", "init", "undo"] {
+            assert!(
+                cmd.find_subcommand(name).is_some(),
+                "missing subcommand: {name}"
+            );
+        }
+    }
 }

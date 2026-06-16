@@ -15,7 +15,7 @@ pub fn run(action: &crate::cli::ProviderAction) -> Result<()> {
             println!();
             if cfg.providers.is_empty() {
                 println!("No named profiles. Add one with:");
-                println!("  tk provider add <name> --type <azure|openai|mlx|ollama> ...");
+                println!("  sara provider add <name> --type <azure|openai|mlx|ollama> ...");
             } else {
                 let mut names: Vec<_> = cfg.providers.keys().collect();
                 names.sort();
@@ -43,7 +43,7 @@ pub fn run(action: &crate::cli::ProviderAction) -> Result<()> {
                 println!("Switched to '{name}' ({} / {})", p.provider, p.model);
             } else {
                 anyhow::bail!(
-                    "No profile named '{name}'. Run `tk provider list` to see available profiles."
+                    "No profile named '{name}'. Run `sara provider list` to see available profiles."
                 );
             }
         }

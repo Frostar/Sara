@@ -214,3 +214,71 @@ pub struct Project {
     pub initialized_at: Option<DateTime<Utc>>,
     pub last_seen: Option<DateTime<Utc>>,
 }
+
+/// A captured note or link in Sara's store (indexed in SQLite, body in markdown).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Item {
+    pub uuid: Uuid,
+    /// Small display id within kind (n1, l2 prefixes in CLI)
+    pub display_id: Option<i64>,
+    pub kind: String,
+    pub title: String,
+    pub url: Option<String>,
+    pub project: Option<String>,
+    pub tags: Vec<String>,
+    /// Relative path inside the store
+    pub path: Option<String>,
+    pub summary: Option<String>,
+    pub body: String,
+    pub created: DateTime<Utc>,
+    pub modified: DateTime<Utc>,
+    pub status: String,
+}
+
+impl Item {
+    pub fn new_note(title: String, body: String) -> Self {
+        let now = Utc::now();
+        Item {
+            uuid: Uuid::new_v4(),
+            display_id: None,
+            kind: "note".to_string(),
+            title,
+            url: None,
+            project: None,
+            tags: vec![],
+            path: None,
+            summary: None,
+            body,
+            created: now,
+            modified: now,
+            status: "active".to_string(),
+        }
+    }
+
+    pub fn new_link(url: String, title: String, body: String) -> Self {
+        let now = Utc::now();
+        Item {
+            uuid: Uuid::new_v4(),
+            display_id: None,
+            kind: "link".to_string(),
+            title,
+            url: Some(url),
+            project: None,
+            tags: vec![],
+            path: None,
+            summary: None,
+            body,
+            created: now,
+            modified: now,
+            status: "active".to_string(),
+        }
+    }
+
+    pub fn handle(&self) -> String {
+        let prefix = match self.kind.as_str() {
+            "link" => "l",
+            _ => "n",
+        };
+        format!("{}{}", prefix, self.display_id.unwrap_or(0))
+    }
+}
