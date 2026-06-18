@@ -140,7 +140,7 @@ pub fn run(conn: &Connection, cfg: &Config, all: bool, project_filter: Option<&s
                 Some(Priority::L) => format!("{GREEN}{pri_str:<4}{RESET}"),
                 None => format!("{GRAY}{pri_str:<4}{RESET}"),
             };
-            let due_colored = color_due(&task, &due_str, no_color);
+            let due_colored = color_due(task, &due_str, no_color);
             let active_col = if task.is_active() {
                 format!("{GREEN}●{RESET}")
             } else {

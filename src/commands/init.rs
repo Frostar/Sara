@@ -41,10 +41,9 @@ pub fn detect_stack(path: &str) -> String {
                 .and_then(|e| e.to_str())
                 .map(|e| e == "swift")
                 .unwrap_or(false)
+                && !stacks.contains(&"Swift")
             {
-                if !stacks.contains(&"Swift") {
-                    stacks.push("Swift");
-                }
+                stacks.push("Swift");
             }
         }
     }

@@ -55,7 +55,7 @@ pub fn stop(conn: &Connection, cfg: &Config, id_or_uuid: &str) -> Result<()> {
     );
 
     // If this task has a tied branch, snapshot its changed files.
-    if let Some(branch_rec) = db::get_task_branch(&conn, &task.uuid) {
+    if let Some(branch_rec) = db::get_task_branch(conn, &task.uuid) {
         let project_path = db::get_project(conn, &task.project)
             .ok()
             .flatten()

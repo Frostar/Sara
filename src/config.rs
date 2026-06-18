@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -115,10 +115,10 @@ impl Default for Config {
 impl Config {
     /// Return the effective LLM config: active named profile if set, else [llm].
     pub fn effective_llm(&self) -> &LlmConfig {
-        if let Some(ref name) = self.active_provider {
-            if let Some(profile) = self.providers.get(name) {
-                return profile;
-            }
+        if let Some(ref name) = self.active_provider
+            && let Some(profile) = self.providers.get(name)
+        {
+            return profile;
         }
         &self.llm
     }
@@ -199,26 +199,28 @@ pub fn migrate_from_tk_if_needed() -> Result<bool> {
     let sara_db = db_path()?;
     let mut migrated = false;
 
-    if let Some(tk_cfg) = legacy_tk_config_path() {
-        if tk_cfg.exists() && !sara_cfg.exists() {
-            if let Some(parent) = sara_cfg.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(&tk_cfg, &sara_cfg)
-                .with_context(|| format!("Failed to copy config from {}", tk_cfg.display()))?;
-            migrated = true;
+    if let Some(tk_cfg) = legacy_tk_config_path()
+        && tk_cfg.exists()
+        && !sara_cfg.exists()
+    {
+        if let Some(parent) = sara_cfg.parent() {
+            std::fs::create_dir_all(parent)?;
         }
+        std::fs::copy(&tk_cfg, &sara_cfg)
+            .with_context(|| format!("Failed to copy config from {}", tk_cfg.display()))?;
+        migrated = true;
     }
 
-    if let Some(tk_db) = legacy_tk_db_path() {
-        if tk_db.exists() && !sara_db.exists() {
-            if let Some(parent) = sara_db.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(&tk_db, &sara_db)
-                .with_context(|| format!("Failed to copy database from {}", tk_db.display()))?;
-            migrated = true;
+    if let Some(tk_db) = legacy_tk_db_path()
+        && tk_db.exists()
+        && !sara_db.exists()
+    {
+        if let Some(parent) = sara_db.parent() {
+            std::fs::create_dir_all(parent)?;
         }
+        std::fs::copy(&tk_db, &sara_db)
+            .with_context(|| format!("Failed to copy database from {}", tk_db.display()))?;
+        migrated = true;
     }
 
     if migrated {
@@ -256,6 +258,7 @@ pub fn save(cfg: &Config) -> Result<()> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
     use std::sync::{Mutex, OnceLock};
 
     static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();

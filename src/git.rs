@@ -50,10 +50,9 @@ pub fn default_base(repo: &Path) -> String {
     if let Ok(out) = git_output(
         repo,
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-    ) {
-        if !out.is_empty() {
-            return out; // e.g. "origin/main"
-        }
+    ) && !out.is_empty()
+    {
+        return out; // e.g. "origin/main"
     }
     // Fall back to first existing of main / master (local)
     for candidate in ["main", "master"] {

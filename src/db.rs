@@ -491,10 +491,10 @@ pub fn get_task_by_uuid_prefix(conn: &Connection, prefix: &str) -> Result<Option
 
 /// Resolve "3" (display id) or a uuid prefix to a Task
 pub fn resolve_task(conn: &Connection, id_or_uuid: &str) -> Result<Task> {
-    if let Ok(n) = id_or_uuid.parse::<i64>() {
-        if let Some(t) = get_task_by_id(conn, n)? {
-            return Ok(t);
-        }
+    if let Ok(n) = id_or_uuid.parse::<i64>()
+        && let Some(t) = get_task_by_id(conn, n)?
+    {
+        return Ok(t);
     }
     if let Some(t) = get_task_by_uuid_prefix(conn, id_or_uuid)? {
         return Ok(t);
@@ -931,12 +931,11 @@ pub fn delete_annotation(conn: &Connection, ann_id: i64) -> Result<bool> {
         .ok();
 
     let n = conn.execute("DELETE FROM annotations WHERE id=?1", [ann_id])?;
-    if n > 0 {
-        if let Some((uuid_str, text)) = existing {
-            if let Ok(uuid) = Uuid::parse_str(&uuid_str) {
-                record_history(conn, &uuid, "annotation", Some(&text), None)?;
-            }
-        }
+    if n > 0
+        && let Some((uuid_str, text)) = existing
+        && let Ok(uuid) = Uuid::parse_str(&uuid_str)
+    {
+        record_history(conn, &uuid, "annotation", Some(&text), None)?;
     }
     Ok(n > 0)
 }
@@ -1077,13 +1076,12 @@ pub fn delete_link(conn: &Connection, link_id: i64) -> Result<bool> {
         .ok();
 
     let n = conn.execute("DELETE FROM task_links WHERE id=?1", [link_id])?;
-    if n > 0 {
-        if let Some((uuid_str, url, label)) = existing {
-            if let Ok(uuid) = Uuid::parse_str(&uuid_str) {
-                let display = label.or_else(|| derive_link_label(&url)).unwrap_or(url);
-                record_history(conn, &uuid, "link", Some(&display), None)?;
-            }
-        }
+    if n > 0
+        && let Some((uuid_str, url, label)) = existing
+        && let Ok(uuid) = Uuid::parse_str(&uuid_str)
+    {
+        let display = label.or_else(|| derive_link_label(&url)).unwrap_or(url);
+        record_history(conn, &uuid, "link", Some(&display), None)?;
     }
     Ok(n > 0)
 }
@@ -1412,6 +1410,684 @@ pub fn refresh_urgency(
     Ok(())
 }
 
+// ── urgency breakdown ─────────────────────────────────────────────────────────
+
+pub struct UrgencyBreakdown {
+    pub priority: f64,
+    pub due: f64,
+    pub blocking: f64,
+    pub blocked: f64,
+    pub active: f64,
+    pub tags: f64,
+    pub project: f64,
+    pub age: f64,
+}
+
+pub fn compute_urgency_breakdown(
+    task: &Task,
+    cfg: &crate::config::UrgencyConfig,
+    is_blocked: bool,
+    blocking_count: usize,
+) -> UrgencyBreakdown {
+    let priority = task
+        .priority
+        .as_ref()
+        .map(|p| p.urgency_coefficient())
+        .unwrap_or(0.0);
+
+    let due = if let Some(due) = task.due {
+        let days_until: f64 = (due - Utc::now()).num_seconds() as f64 / 86400.0;
+        let factor = if days_until <= 0.0 {
+            1.0
+        } else if days_until >= 7.0 {
+            0.0
+        } else {
+            1.0 - (days_until / 7.0)
+        };
+        cfg.due * factor
+    } else {
+        0.0
+    };
+
+    let blocking = if blocking_count > 0 {
+        cfg.blocking
+    } else {
+        0.0
+    };
+    let blocked = if is_blocked { cfg.blocked } else { 0.0 };
+    let active = if task.is_active() { cfg.active } else { 0.0 };
+    let tags = if !task.tags.is_empty() {
+        cfg.has_tags
+    } else {
+        0.0
+    };
+    let project = if task.project != "inbox" {
+        cfg.project
+    } else {
+        0.0
+    };
+    let age_days = (Utc::now() - task.entry).num_days() as f64;
+    let age = cfg.age * (age_days / cfg.age_max).min(1.0);
+
+    UrgencyBreakdown {
+        priority,
+        due,
+        blocking,
+        blocked,
+        active,
+        tags,
+        project,
+        age,
+    }
+}
+
+// ── similar tasks ─────────────────────────────────────────────────────────────
+
+/// Tasks in the same project sharing at least one tag, excluding the task itself.
+pub fn similar_tasks(
+    conn: &Connection,
+    task_uuid: &Uuid,
+    project: &str,
+    tags: &[String],
+) -> Result<Vec<(i64, String, f64)>> {
+    if tags.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {TASK_COLUMNS} FROM tasks WHERE status='pending' AND project=?1 AND uuid!=?2"
+    ))?;
+    let all: Vec<Task> = stmt
+        .query_map(
+            rusqlite::params![project, task_uuid.to_string()],
+            row_to_task,
+        )?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let result = all
+        .into_iter()
+        .filter(|t| t.tags.iter().any(|tag| tags.contains(tag)))
+        .filter_map(|t| t.id.map(|id| (id, t.description.clone(), t.urgency)))
+        .collect();
+    Ok(result)
+}
+
+// ── checklist ─────────────────────────────────────────────────────────────────
+
+pub struct ChecklistItem {
+    pub id: i64,
+    pub text: String,
+    pub done: bool,
+}
+
+pub fn get_checklist(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<ChecklistItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, text, done FROM task_checklist WHERE task_uuid=?1 ORDER BY position, id",
+    )?;
+    let items = stmt
+        .query_map([task_uuid.to_string()], |r| {
+            Ok(ChecklistItem {
+                id: r.get(0)?,
+                text: r.get(1)?,
+                done: r.get::<_, i64>(2)? != 0,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(items)
+}
+
+pub fn add_checklist_item(conn: &Connection, task_uuid: &Uuid, text: &str) -> Result<()> {
+    let pos: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(position),0)+1 FROM task_checklist WHERE task_uuid=?1",
+            [task_uuid.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap_or(1);
+    conn.execute(
+        "INSERT INTO task_checklist (task_uuid, text, done, position) VALUES (?1,?2,0,?3)",
+        rusqlite::params![task_uuid.to_string(), text, pos],
+    )?;
+    record_history(conn, task_uuid, "checklist", None, Some(text))?;
+    Ok(())
+}
+
+pub fn toggle_checklist_item(conn: &Connection, item_id: i64) -> Result<bool> {
+    let (task_uuid_str, text, done): (String, String, i64) = conn.query_row(
+        "SELECT task_uuid, text, done FROM task_checklist WHERE id=?1",
+        [item_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let new_done = if done == 0 { 1i64 } else { 0i64 };
+    conn.execute(
+        "UPDATE task_checklist SET done=?1 WHERE id=?2",
+        rusqlite::params![new_done, item_id],
+    )?;
+    if let Ok(uuid) = Uuid::parse_str(&task_uuid_str) {
+        let old = format!("{} {text}", if done == 0 { "[ ]" } else { "[x]" });
+        let new = format!("{} {text}", if new_done == 0 { "[ ]" } else { "[x]" });
+        record_history(conn, &uuid, "checklist", Some(&old), Some(&new))?;
+    }
+    Ok(new_done != 0)
+}
+
+pub fn delete_checklist_item(conn: &Connection, item_id: i64) -> Result<()> {
+    let existing: Option<(String, String)> = conn
+        .query_row(
+            "SELECT task_uuid, text FROM task_checklist WHERE id=?1",
+            [item_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let n = conn.execute("DELETE FROM task_checklist WHERE id=?1", [item_id])?;
+    if n > 0
+        && let Some((uuid_str, text)) = existing
+        && let Ok(uuid) = Uuid::parse_str(&uuid_str)
+    {
+        record_history(conn, &uuid, "checklist", Some(&text), None)?;
+    }
+    Ok(())
+}
+
+// ── estimate ──────────────────────────────────────────────────────────────────
+
+pub fn set_estimate(conn: &Connection, task_uuid: &Uuid, mins: Option<i64>) -> Result<()> {
+    conn.execute(
+        "UPDATE tasks SET estimate_mins=?1 WHERE uuid=?2",
+        rusqlite::params![mins, task_uuid.to_string()],
+    )?;
+    Ok(())
+}
+
+// ── activity heatmap ──────────────────────────────────────────────────────────
+
+/// Returns a map of NaiveDate → activity count for the last `days` days.
+/// Activity = tasks created + tasks completed + history change events.
+/// When `project` is Some, filter to that project only.
+pub fn activity_counts(
+    conn: &Connection,
+    days: u32,
+    project: Option<&str>,
+) -> Result<std::collections::HashMap<chrono::NaiveDate, u32>> {
+    let mut map: std::collections::HashMap<chrono::NaiveDate, u32> =
+        std::collections::HashMap::new();
+    let since = (Utc::now() - chrono::Duration::days(days as i64))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let proj_filter = if project.is_some() {
+        "AND project=?2"
+    } else {
+        ""
+    };
+
+    // Tasks created
+    {
+        let sql = format!(
+            "SELECT substr(entry,1,10), COUNT(*) FROM tasks WHERE entry >= ?1 {proj_filter} GROUP BY substr(entry,1,10)"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows: Vec<(String, u32)> = if let Some(p) = project {
+            stmt.query_map(rusqlite::params![since, p], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect()
+        } else {
+            stmt.query_map(rusqlite::params![since], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        for (date_str, count) in rows {
+            if let Ok(d) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
+                *map.entry(d).or_insert(0) += count;
+            }
+        }
+    }
+
+    // Tasks completed
+    {
+        let sql = format!(
+            "SELECT substr(end,1,10), COUNT(*) FROM tasks WHERE end IS NOT NULL AND end >= ?1 {proj_filter} GROUP BY substr(end,1,10)"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows: Vec<(String, u32)> = if let Some(p) = project {
+            stmt.query_map(rusqlite::params![since, p], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect()
+        } else {
+            stmt.query_map(rusqlite::params![since], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        for (date_str, count) in rows {
+            if let Ok(d) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
+                *map.entry(d).or_insert(0) += count * 2; // completions count double
+            }
+        }
+    }
+
+    // History events (modifications, annotations, etc.)
+    {
+        let proj_join = if project.is_some() {
+            "JOIN tasks t ON t.uuid = h.task_uuid"
+        } else {
+            ""
+        };
+        let proj_where = if project.is_some() {
+            "AND t.project=?2"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT substr(h.changed_at,1,10), COUNT(*) FROM task_history h {proj_join}
+             WHERE h.changed_at >= ?1 {proj_where}
+             GROUP BY substr(h.changed_at,1,10)"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows: Vec<(String, u32)> = if let Some(p) = project {
+            stmt.query_map(rusqlite::params![since, p], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect()
+        } else {
+            stmt.query_map(rusqlite::params![since], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        for (date_str, count) in rows {
+            if let Ok(d) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
+                *map.entry(d).or_insert(0) += count;
+            }
+        }
+    }
+
+    Ok(map)
+}
+
+/// Returns (total_created, total_completed, current_streak_days, longest_streak_days)
+pub fn activity_stats(conn: &Connection, project: Option<&str>) -> Result<(u32, u32, u32, u32)> {
+    let proj_filter = if project.is_some() {
+        "WHERE project=?1"
+    } else {
+        ""
+    };
+
+    let created: u32 = if let Some(p) = project {
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM tasks {proj_filter}"),
+            rusqlite::params![p],
+            |r| r.get(0),
+        )?
+    } else {
+        conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?
+    };
+
+    let completed: u32 = if let Some(p) = project {
+        conn.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status='completed' AND project=?1",
+            rusqlite::params![p],
+            |r| r.get(0),
+        )?
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status='completed'",
+            [],
+            |r| r.get(0),
+        )?
+    };
+
+    // Streak: consecutive days with any activity (from activity_counts).
+    // We'll compute this from completion dates for simplicity.
+    let mut dates: Vec<chrono::NaiveDate> = {
+        let sql = if project.is_some() {
+            "SELECT DISTINCT substr(end,1,10) FROM tasks WHERE end IS NOT NULL AND project=?1 ORDER BY end DESC"
+        } else {
+            "SELECT DISTINCT substr(end,1,10) FROM tasks WHERE end IS NOT NULL ORDER BY end DESC"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows: Vec<String> = if let Some(p) = project {
+            stmt.query_map(rusqlite::params![p], |r| r.get(0))?
+                .filter_map(|r| r.ok())
+                .collect()
+        } else {
+            stmt.query_map([], |r| r.get(0))?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        rows.iter()
+            .filter_map(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+            .collect()
+    };
+    dates.sort_unstable();
+    dates.dedup();
+
+    let today = Utc::now().date_naive();
+    let mut current_streak = 0u32;
+    let mut longest_streak = 0u32;
+    let mut streak = 0u32;
+    let mut prev: Option<chrono::NaiveDate> = None;
+    for d in &dates {
+        if let Some(p) = prev {
+            if (*d - p).num_days() == 1 {
+                streak += 1;
+            } else {
+                streak = 1;
+            }
+        } else {
+            streak = 1;
+        }
+        longest_streak = longest_streak.max(streak);
+        prev = Some(*d);
+    }
+    // Current streak: count backwards from today
+    if let Some(&last) = dates.last()
+        && (today - last).num_days() <= 1
+    {
+        current_streak = 1;
+        let mut d = last;
+        for &prev_d in dates.iter().rev().skip(1) {
+            if (d - prev_d).num_days() == 1 {
+                current_streak += 1;
+                d = prev_d;
+            } else {
+                break;
+            }
+        }
+    }
+
+    Ok((created, completed, current_streak, longest_streak))
+}
+
+// ── project stats ─────────────────────────────────────────────────────────────
+
+pub struct ProjectStats {
+    pub pending: u32,
+    pub active: u32,
+    pub completed_total: u32,
+    pub high: u32,
+    pub medium: u32,
+    pub low: u32,
+    pub no_pri: u32,
+    pub overdue: u32,
+    pub due_today: u32,
+    pub due_week: u32,
+}
+
+pub fn project_stats(conn: &Connection, project: &str) -> Result<ProjectStats> {
+    let now_str = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    let today_str = Utc::now().format("%Y-%m-%d").to_string();
+    let week_str = (Utc::now() + chrono::Duration::days(7))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let pending: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending'",
+        [project],
+        |r| r.get(0),
+    )?;
+    let active: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND started_at IS NOT NULL",
+        [project], |r| r.get(0),
+    )?;
+    let completed_total: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='completed'",
+        [project],
+        |r| r.get(0),
+    )?;
+    let high: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='H'",
+        [project],
+        |r| r.get(0),
+    )?;
+    let medium: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='M'",
+        [project],
+        |r| r.get(0),
+    )?;
+    let low: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='L'",
+        [project],
+        |r| r.get(0),
+    )?;
+    let no_pri: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority IS NULL",
+        [project],
+        |r| r.get(0),
+    )?;
+    let overdue: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND due IS NOT NULL AND due < ?2",
+        rusqlite::params![project, now_str], |r| r.get(0),
+    )?;
+    let due_today: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND due IS NOT NULL AND substr(due,1,10)=?2",
+        rusqlite::params![project, today_str], |r| r.get(0),
+    )?;
+    let due_week: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND due IS NOT NULL AND due >= ?2 AND substr(due,1,10) <= ?3",
+        rusqlite::params![project, now_str, week_str], |r| r.get(0),
+    )?;
+
+    Ok(ProjectStats {
+        pending,
+        active,
+        completed_total,
+        high,
+        medium,
+        low,
+        no_pri,
+        overdue,
+        due_today,
+        due_week,
+    })
+}
+
+// ── items (notes & links) ───────────────────────────────────────────────────
+
+fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
+    let tags_json: String = row.get(6)?;
+    let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+    Ok(Item {
+        uuid: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap_or_else(|_| Uuid::new_v4()),
+        display_id: row.get(2)?,
+        kind: row.get(1)?,
+        title: row.get(3)?,
+        url: row.get(4)?,
+        project: row.get(5)?,
+        tags,
+        path: Some(row.get(7)?),
+        summary: row.get(8)?,
+        body: row.get(9)?,
+        created: str_to_dt(&row.get::<_, String>(10)?).unwrap_or_else(|_| Utc::now()),
+        modified: str_to_dt(&row.get::<_, String>(11)?).unwrap_or_else(|_| Utc::now()),
+        status: row.get(12)?,
+    })
+}
+
+fn next_item_display_id(conn: &Connection, kind: &str) -> Result<i64> {
+    let max: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(display_id), 0) FROM items WHERE kind = ?1 AND status = 'active'",
+            [kind],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    Ok(max + 1)
+}
+
+pub fn insert_item(conn: &Connection, item: &mut Item) -> Result<()> {
+    if item.display_id.is_none() {
+        item.display_id = Some(next_item_display_id(conn, &item.kind)?);
+    }
+    let path = item
+        .path
+        .clone()
+        .context("item path must be set before insert")?;
+    let tags_json = serde_json::to_string(&item.tags)?;
+    conn.execute(
+        "INSERT INTO items (uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        rusqlite::params![
+            item.uuid.to_string(),
+            item.kind,
+            item.display_id,
+            item.title,
+            item.url,
+            item.project,
+            tags_json,
+            path,
+            item.summary,
+            item.body,
+            dt_to_str(&item.created),
+            dt_to_str(&item.modified),
+            item.status,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn list_items(conn: &Connection, kind: Option<&str>) -> Result<Vec<Item>> {
+    let mut items = vec![];
+    if let Some(k) = kind {
+        let mut stmt = conn.prepare(
+            "SELECT uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status
+             FROM items WHERE status = 'active' AND kind = ?1 ORDER BY display_id",
+        )?;
+        let rows = stmt.query_map([k], row_to_item)?;
+        for r in rows {
+            items.push(r?);
+        }
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status
+             FROM items WHERE status = 'active' ORDER BY kind, display_id",
+        )?;
+        let rows = stmt.query_map([], row_to_item)?;
+        for r in rows {
+            items.push(r?);
+        }
+    }
+    Ok(items)
+}
+
+pub fn get_item_by_handle(conn: &Connection, handle: &str) -> Result<Item> {
+    let handle = handle.trim().to_lowercase();
+    let (kind, id_str) = if let Some(rest) = handle.strip_prefix('n') {
+        ("note", rest)
+    } else if let Some(rest) = handle.strip_prefix('l') {
+        ("link", rest)
+    } else {
+        anyhow::bail!("Item handle must start with n or l (e.g. n1, l2)");
+    };
+    let id: i64 = id_str.parse().context("Invalid item id")?;
+    conn.query_row(
+        "SELECT uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status
+         FROM items WHERE kind = ?1 AND display_id = ?2 AND status = 'active'",
+        rusqlite::params![kind, id],
+        row_to_item,
+    )
+    .map_err(|_| anyhow::anyhow!("No active {kind} with id {id}"))
+}
+
+pub fn update_item(conn: &Connection, item: &Item) -> Result<()> {
+    let tags_json = serde_json::to_string(&item.tags)?;
+    conn.execute(
+        "UPDATE items SET title=?2, url=?3, project=?4, tags_json=?5, path=?6, summary=?7, body=?8, modified=?9
+         WHERE uuid=?1",
+        rusqlite::params![
+            item.uuid.to_string(),
+            item.title,
+            item.url,
+            item.project,
+            tags_json,
+            item.path,
+            item.summary,
+            item.body,
+            dt_to_str(&item.modified),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn archive_item(conn: &Connection, uuid: &Uuid) -> Result<()> {
+    conn.execute(
+        "UPDATE items SET status='archived', modified=?2 WHERE uuid=?1",
+        rusqlite::params![uuid.to_string(), dt_to_str(&Utc::now())],
+    )?;
+    Ok(())
+}
+
+pub fn record_event(
+    conn: &Connection,
+    action: &str,
+    ref_uuid: Option<&Uuid>,
+    kind: Option<&str>,
+    tags: &[String],
+    project: Option<&str>,
+) -> Result<()> {
+    let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
+    conn.execute(
+        "INSERT INTO events (action, ref_uuid, kind, tags_json, project, at) VALUES (?1,?2,?3,?4,?5,?6)",
+        rusqlite::params![
+            action,
+            ref_uuid.map(|u| u.to_string()),
+            kind,
+            tags_json,
+            project,
+            dt_to_str(&Utc::now()),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn recent_events(
+    conn: &Connection,
+    limit: i64,
+) -> Result<Vec<(String, Option<String>, String)>> {
+    let mut stmt = conn.prepare("SELECT action, kind, at FROM events ORDER BY id DESC LIMIT ?1")?;
+    let rows = stmt.query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn recent_search_queries(conn: &Connection, limit: i64) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT tags_json FROM events WHERE action = 'search' ORDER BY id DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit], |r| {
+        let tags_json: String = r.get(0)?;
+        Ok(tags_json)
+    })?;
+    let mut queries = Vec::new();
+    for row in rows {
+        let tags_json = row?;
+        if let Ok(tags) = serde_json::from_str::<Vec<String>>(&tags_json)
+            && let Some(q) = tags.first()
+            && !q.is_empty()
+        {
+            queries.push(q.clone());
+        }
+    }
+    Ok(queries)
+}
+
+pub fn upsert_embedding(conn: &Connection, ref_uuid: &Uuid, vector: &[f32]) -> Result<()> {
+    let vector_json = serde_json::to_string(vector)?;
+    conn.execute(
+        "INSERT INTO embeddings (ref_uuid, vector_json) VALUES (?1, ?2)
+         ON CONFLICT(ref_uuid) DO UPDATE SET vector_json = excluded.vector_json",
+        rusqlite::params![ref_uuid.to_string(), vector_json],
+    )?;
+    Ok(())
+}
+
+pub fn all_embeddings(conn: &Connection) -> Result<Vec<(String, Vec<f32>)>> {
+    let mut stmt = conn.prepare("SELECT ref_uuid, vector_json FROM embeddings")?;
+    let rows = stmt.query_map([], |r| {
+        let uuid: String = r.get(0)?;
+        let json: String = r.get(1)?;
+        let vec: Vec<f32> = serde_json::from_str(&json).unwrap_or_default();
+        Ok((uuid, vec))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1692,686 +2368,4 @@ mod tests {
             vec![("y.rs".to_string(), SOURCE_MANUAL.to_string())]
         );
     }
-}
-
-// ── urgency breakdown ─────────────────────────────────────────────────────────
-
-pub struct UrgencyBreakdown {
-    pub priority: f64,
-    pub due: f64,
-    pub blocking: f64,
-    pub blocked: f64,
-    pub active: f64,
-    pub tags: f64,
-    pub project: f64,
-    pub age: f64,
-}
-
-pub fn compute_urgency_breakdown(
-    task: &Task,
-    cfg: &crate::config::UrgencyConfig,
-    is_blocked: bool,
-    blocking_count: usize,
-) -> UrgencyBreakdown {
-    let priority = task
-        .priority
-        .as_ref()
-        .map(|p| p.urgency_coefficient())
-        .unwrap_or(0.0);
-
-    let due = if let Some(due) = task.due {
-        let days_until: f64 = (due - Utc::now()).num_seconds() as f64 / 86400.0;
-        let factor = if days_until <= 0.0 {
-            1.0
-        } else if days_until >= 7.0 {
-            0.0
-        } else {
-            1.0 - (days_until / 7.0)
-        };
-        cfg.due * factor
-    } else {
-        0.0
-    };
-
-    let blocking = if blocking_count > 0 {
-        cfg.blocking
-    } else {
-        0.0
-    };
-    let blocked = if is_blocked { cfg.blocked } else { 0.0 };
-    let active = if task.is_active() { cfg.active } else { 0.0 };
-    let tags = if !task.tags.is_empty() {
-        cfg.has_tags
-    } else {
-        0.0
-    };
-    let project = if task.project != "inbox" {
-        cfg.project
-    } else {
-        0.0
-    };
-    let age_days = (Utc::now() - task.entry).num_days() as f64;
-    let age = cfg.age * (age_days / cfg.age_max).min(1.0);
-
-    UrgencyBreakdown {
-        priority,
-        due,
-        blocking,
-        blocked,
-        active,
-        tags,
-        project,
-        age,
-    }
-}
-
-// ── similar tasks ─────────────────────────────────────────────────────────────
-
-/// Tasks in the same project sharing at least one tag, excluding the task itself.
-pub fn similar_tasks(
-    conn: &Connection,
-    task_uuid: &Uuid,
-    project: &str,
-    tags: &[String],
-) -> Result<Vec<(i64, String, f64)>> {
-    if tags.is_empty() {
-        return Ok(vec![]);
-    }
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {TASK_COLUMNS} FROM tasks WHERE status='pending' AND project=?1 AND uuid!=?2"
-    ))?;
-    let all: Vec<Task> = stmt
-        .query_map(
-            rusqlite::params![project, task_uuid.to_string()],
-            row_to_task,
-        )?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    let result = all
-        .into_iter()
-        .filter(|t| t.tags.iter().any(|tag| tags.contains(tag)))
-        .filter_map(|t| t.id.map(|id| (id, t.description.clone(), t.urgency)))
-        .collect();
-    Ok(result)
-}
-
-// ── checklist ─────────────────────────────────────────────────────────────────
-
-pub struct ChecklistItem {
-    pub id: i64,
-    pub text: String,
-    pub done: bool,
-}
-
-pub fn get_checklist(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<ChecklistItem>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, text, done FROM task_checklist WHERE task_uuid=?1 ORDER BY position, id",
-    )?;
-    let items = stmt
-        .query_map([task_uuid.to_string()], |r| {
-            Ok(ChecklistItem {
-                id: r.get(0)?,
-                text: r.get(1)?,
-                done: r.get::<_, i64>(2)? != 0,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(items)
-}
-
-pub fn add_checklist_item(conn: &Connection, task_uuid: &Uuid, text: &str) -> Result<()> {
-    let pos: i64 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(position),0)+1 FROM task_checklist WHERE task_uuid=?1",
-            [task_uuid.to_string()],
-            |r| r.get(0),
-        )
-        .unwrap_or(1);
-    conn.execute(
-        "INSERT INTO task_checklist (task_uuid, text, done, position) VALUES (?1,?2,0,?3)",
-        rusqlite::params![task_uuid.to_string(), text, pos],
-    )?;
-    record_history(conn, task_uuid, "checklist", None, Some(text))?;
-    Ok(())
-}
-
-pub fn toggle_checklist_item(conn: &Connection, item_id: i64) -> Result<bool> {
-    let (task_uuid_str, text, done): (String, String, i64) = conn.query_row(
-        "SELECT task_uuid, text, done FROM task_checklist WHERE id=?1",
-        [item_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    )?;
-    let new_done = if done == 0 { 1i64 } else { 0i64 };
-    conn.execute(
-        "UPDATE task_checklist SET done=?1 WHERE id=?2",
-        rusqlite::params![new_done, item_id],
-    )?;
-    if let Ok(uuid) = Uuid::parse_str(&task_uuid_str) {
-        let old = format!("{} {text}", if done == 0 { "[ ]" } else { "[x]" });
-        let new = format!("{} {text}", if new_done == 0 { "[ ]" } else { "[x]" });
-        record_history(conn, &uuid, "checklist", Some(&old), Some(&new))?;
-    }
-    Ok(new_done != 0)
-}
-
-pub fn delete_checklist_item(conn: &Connection, item_id: i64) -> Result<()> {
-    let existing: Option<(String, String)> = conn
-        .query_row(
-            "SELECT task_uuid, text FROM task_checklist WHERE id=?1",
-            [item_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok();
-    let n = conn.execute("DELETE FROM task_checklist WHERE id=?1", [item_id])?;
-    if n > 0 {
-        if let Some((uuid_str, text)) = existing {
-            if let Ok(uuid) = Uuid::parse_str(&uuid_str) {
-                record_history(conn, &uuid, "checklist", Some(&text), None)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-// ── estimate ──────────────────────────────────────────────────────────────────
-
-pub fn set_estimate(conn: &Connection, task_uuid: &Uuid, mins: Option<i64>) -> Result<()> {
-    conn.execute(
-        "UPDATE tasks SET estimate_mins=?1 WHERE uuid=?2",
-        rusqlite::params![mins, task_uuid.to_string()],
-    )?;
-    Ok(())
-}
-
-// ── activity heatmap ──────────────────────────────────────────────────────────
-
-/// Returns a map of NaiveDate → activity count for the last `days` days.
-/// Activity = tasks created + tasks completed + history change events.
-/// When `project` is Some, filter to that project only.
-pub fn activity_counts(
-    conn: &Connection,
-    days: u32,
-    project: Option<&str>,
-) -> Result<std::collections::HashMap<chrono::NaiveDate, u32>> {
-    use chrono::TimeZone;
-    let mut map: std::collections::HashMap<chrono::NaiveDate, u32> =
-        std::collections::HashMap::new();
-    let since = (Utc::now() - chrono::Duration::days(days as i64))
-        .format("%Y-%m-%d")
-        .to_string();
-
-    let proj_filter = if project.is_some() {
-        "AND project=?2"
-    } else {
-        ""
-    };
-
-    // Tasks created
-    {
-        let sql = format!(
-            "SELECT substr(entry,1,10), COUNT(*) FROM tasks WHERE entry >= ?1 {proj_filter} GROUP BY substr(entry,1,10)"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows: Vec<(String, u32)> = if let Some(p) = project {
-            stmt.query_map(rusqlite::params![since, p], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect()
-        } else {
-            stmt.query_map(rusqlite::params![since], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect()
-        };
-        for (date_str, count) in rows {
-            if let Ok(d) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
-                *map.entry(d).or_insert(0) += count;
-            }
-        }
-    }
-
-    // Tasks completed
-    {
-        let sql = format!(
-            "SELECT substr(end,1,10), COUNT(*) FROM tasks WHERE end IS NOT NULL AND end >= ?1 {proj_filter} GROUP BY substr(end,1,10)"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows: Vec<(String, u32)> = if let Some(p) = project {
-            stmt.query_map(rusqlite::params![since, p], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect()
-        } else {
-            stmt.query_map(rusqlite::params![since], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect()
-        };
-        for (date_str, count) in rows {
-            if let Ok(d) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
-                *map.entry(d).or_insert(0) += count * 2; // completions count double
-            }
-        }
-    }
-
-    // History events (modifications, annotations, etc.)
-    {
-        let proj_join = if project.is_some() {
-            "JOIN tasks t ON t.uuid = h.task_uuid"
-        } else {
-            ""
-        };
-        let proj_where = if project.is_some() {
-            "AND t.project=?2"
-        } else {
-            ""
-        };
-        let sql = format!(
-            "SELECT substr(h.changed_at,1,10), COUNT(*) FROM task_history h {proj_join}
-             WHERE h.changed_at >= ?1 {proj_where}
-             GROUP BY substr(h.changed_at,1,10)"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows: Vec<(String, u32)> = if let Some(p) = project {
-            stmt.query_map(rusqlite::params![since, p], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect()
-        } else {
-            stmt.query_map(rusqlite::params![since], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect()
-        };
-        for (date_str, count) in rows {
-            if let Ok(d) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
-                *map.entry(d).or_insert(0) += count;
-            }
-        }
-    }
-
-    Ok(map)
-}
-
-/// Returns (total_created, total_completed, current_streak_days, longest_streak_days)
-pub fn activity_stats(conn: &Connection, project: Option<&str>) -> Result<(u32, u32, u32, u32)> {
-    let proj_filter = if project.is_some() {
-        "WHERE project=?1"
-    } else {
-        ""
-    };
-
-    let created: u32 = if let Some(p) = project {
-        conn.query_row(
-            &format!("SELECT COUNT(*) FROM tasks {proj_filter}"),
-            rusqlite::params![p],
-            |r| r.get(0),
-        )?
-    } else {
-        conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?
-    };
-
-    let completed: u32 = if let Some(p) = project {
-        conn.query_row(
-            &format!("SELECT COUNT(*) FROM tasks WHERE status='completed' AND project=?1"),
-            rusqlite::params![p],
-            |r| r.get(0),
-        )?
-    } else {
-        conn.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE status='completed'",
-            [],
-            |r| r.get(0),
-        )?
-    };
-
-    // Streak: consecutive days with any activity (from activity_counts).
-    // We'll compute this from completion dates for simplicity.
-    let mut dates: Vec<chrono::NaiveDate> = {
-        let sql = if project.is_some() {
-            "SELECT DISTINCT substr(end,1,10) FROM tasks WHERE end IS NOT NULL AND project=?1 ORDER BY end DESC"
-        } else {
-            "SELECT DISTINCT substr(end,1,10) FROM tasks WHERE end IS NOT NULL ORDER BY end DESC"
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let rows: Vec<String> = if let Some(p) = project {
-            stmt.query_map(rusqlite::params![p], |r| r.get(0))?
-                .filter_map(|r| r.ok())
-                .collect()
-        } else {
-            stmt.query_map([], |r| r.get(0))?
-                .filter_map(|r| r.ok())
-                .collect()
-        };
-        rows.iter()
-            .filter_map(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-            .collect()
-    };
-    dates.sort_unstable();
-    dates.dedup();
-
-    let today = Utc::now().date_naive();
-    let mut current_streak = 0u32;
-    let mut longest_streak = 0u32;
-    let mut streak = 0u32;
-    let mut prev: Option<chrono::NaiveDate> = None;
-    for d in &dates {
-        if let Some(p) = prev {
-            if (*d - p).num_days() == 1 {
-                streak += 1;
-            } else {
-                streak = 1;
-            }
-        } else {
-            streak = 1;
-        }
-        longest_streak = longest_streak.max(streak);
-        prev = Some(*d);
-    }
-    // Current streak: count backwards from today
-    if let Some(&last) = dates.last() {
-        if (today - last).num_days() <= 1 {
-            current_streak = 1;
-            let mut d = last;
-            for &prev_d in dates.iter().rev().skip(1) {
-                if (d - prev_d).num_days() == 1 {
-                    current_streak += 1;
-                    d = prev_d;
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-
-    Ok((created, completed, current_streak, longest_streak))
-}
-
-// ── project stats ─────────────────────────────────────────────────────────────
-
-pub struct ProjectStats {
-    pub pending: u32,
-    pub active: u32,
-    pub completed_total: u32,
-    pub high: u32,
-    pub medium: u32,
-    pub low: u32,
-    pub no_pri: u32,
-    pub overdue: u32,
-    pub due_today: u32,
-    pub due_week: u32,
-}
-
-pub fn project_stats(conn: &Connection, project: &str) -> Result<ProjectStats> {
-    let now_str = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-    let today_str = Utc::now().format("%Y-%m-%d").to_string();
-    let week_str = (Utc::now() + chrono::Duration::days(7))
-        .format("%Y-%m-%d")
-        .to_string();
-
-    let pending: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending'",
-        [project],
-        |r| r.get(0),
-    )?;
-    let active: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND started_at IS NOT NULL",
-        [project], |r| r.get(0),
-    )?;
-    let completed_total: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='completed'",
-        [project],
-        |r| r.get(0),
-    )?;
-    let high: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='H'",
-        [project],
-        |r| r.get(0),
-    )?;
-    let medium: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='M'",
-        [project],
-        |r| r.get(0),
-    )?;
-    let low: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='L'",
-        [project],
-        |r| r.get(0),
-    )?;
-    let no_pri: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority IS NULL",
-        [project],
-        |r| r.get(0),
-    )?;
-    let overdue: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND due IS NOT NULL AND due < ?2",
-        rusqlite::params![project, now_str], |r| r.get(0),
-    )?;
-    let due_today: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND due IS NOT NULL AND substr(due,1,10)=?2",
-        rusqlite::params![project, today_str], |r| r.get(0),
-    )?;
-    let due_week: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND due IS NOT NULL AND due >= ?2 AND substr(due,1,10) <= ?3",
-        rusqlite::params![project, now_str, week_str], |r| r.get(0),
-    )?;
-
-    Ok(ProjectStats {
-        pending,
-        active,
-        completed_total,
-        high,
-        medium,
-        low,
-        no_pri,
-        overdue,
-        due_today,
-        due_week,
-    })
-}
-
-// ── items (notes & links) ───────────────────────────────────────────────────
-
-fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
-    let tags_json: String = row.get(6)?;
-    let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-    Ok(Item {
-        uuid: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap_or_else(|_| Uuid::new_v4()),
-        display_id: row.get(2)?,
-        kind: row.get(1)?,
-        title: row.get(3)?,
-        url: row.get(4)?,
-        project: row.get(5)?,
-        tags,
-        path: Some(row.get(7)?),
-        summary: row.get(8)?,
-        body: row.get(9)?,
-        created: str_to_dt(&row.get::<_, String>(10)?).unwrap_or_else(|_| Utc::now()),
-        modified: str_to_dt(&row.get::<_, String>(11)?).unwrap_or_else(|_| Utc::now()),
-        status: row.get(12)?,
-    })
-}
-
-fn next_item_display_id(conn: &Connection, kind: &str) -> Result<i64> {
-    let max: i64 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(display_id), 0) FROM items WHERE kind = ?1 AND status = 'active'",
-            [kind],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    Ok(max + 1)
-}
-
-pub fn insert_item(conn: &Connection, item: &mut Item) -> Result<()> {
-    if item.display_id.is_none() {
-        item.display_id = Some(next_item_display_id(conn, &item.kind)?);
-    }
-    let path = item
-        .path
-        .clone()
-        .context("item path must be set before insert")?;
-    let tags_json = serde_json::to_string(&item.tags)?;
-    conn.execute(
-        "INSERT INTO items (uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-        rusqlite::params![
-            item.uuid.to_string(),
-            item.kind,
-            item.display_id,
-            item.title,
-            item.url,
-            item.project,
-            tags_json,
-            path,
-            item.summary,
-            item.body,
-            dt_to_str(&item.created),
-            dt_to_str(&item.modified),
-            item.status,
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn list_items(conn: &Connection, kind: Option<&str>) -> Result<Vec<Item>> {
-    let mut items = vec![];
-    if let Some(k) = kind {
-        let mut stmt = conn.prepare(
-            "SELECT uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status
-             FROM items WHERE status = 'active' AND kind = ?1 ORDER BY display_id",
-        )?;
-        let rows = stmt.query_map([k], row_to_item)?;
-        for r in rows {
-            items.push(r?);
-        }
-    } else {
-        let mut stmt = conn.prepare(
-            "SELECT uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status
-             FROM items WHERE status = 'active' ORDER BY kind, display_id",
-        )?;
-        let rows = stmt.query_map([], row_to_item)?;
-        for r in rows {
-            items.push(r?);
-        }
-    }
-    Ok(items)
-}
-
-pub fn get_item_by_handle(conn: &Connection, handle: &str) -> Result<Item> {
-    let handle = handle.trim().to_lowercase();
-    let (kind, id_str) = if let Some(rest) = handle.strip_prefix('n') {
-        ("note", rest)
-    } else if let Some(rest) = handle.strip_prefix('l') {
-        ("link", rest)
-    } else {
-        anyhow::bail!("Item handle must start with n or l (e.g. n1, l2)");
-    };
-    let id: i64 = id_str.parse().context("Invalid item id")?;
-    conn.query_row(
-        "SELECT uuid, kind, display_id, title, url, project, tags_json, path, summary, body, created, modified, status
-         FROM items WHERE kind = ?1 AND display_id = ?2 AND status = 'active'",
-        rusqlite::params![kind, id],
-        row_to_item,
-    )
-    .map_err(|_| anyhow::anyhow!("No active {kind} with id {id}"))
-}
-
-pub fn update_item(conn: &Connection, item: &Item) -> Result<()> {
-    let tags_json = serde_json::to_string(&item.tags)?;
-    conn.execute(
-        "UPDATE items SET title=?2, url=?3, project=?4, tags_json=?5, path=?6, summary=?7, body=?8, modified=?9
-         WHERE uuid=?1",
-        rusqlite::params![
-            item.uuid.to_string(),
-            item.title,
-            item.url,
-            item.project,
-            tags_json,
-            item.path,
-            item.summary,
-            item.body,
-            dt_to_str(&item.modified),
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn archive_item(conn: &Connection, uuid: &Uuid) -> Result<()> {
-    conn.execute(
-        "UPDATE items SET status='archived', modified=?2 WHERE uuid=?1",
-        rusqlite::params![uuid.to_string(), dt_to_str(&Utc::now())],
-    )?;
-    Ok(())
-}
-
-pub fn record_event(
-    conn: &Connection,
-    action: &str,
-    ref_uuid: Option<&Uuid>,
-    kind: Option<&str>,
-    tags: &[String],
-    project: Option<&str>,
-) -> Result<()> {
-    let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
-    conn.execute(
-        "INSERT INTO events (action, ref_uuid, kind, tags_json, project, at) VALUES (?1,?2,?3,?4,?5,?6)",
-        rusqlite::params![
-            action,
-            ref_uuid.map(|u| u.to_string()),
-            kind,
-            tags_json,
-            project,
-            dt_to_str(&Utc::now()),
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn recent_events(
-    conn: &Connection,
-    limit: i64,
-) -> Result<Vec<(String, Option<String>, String)>> {
-    let mut stmt = conn.prepare("SELECT action, kind, at FROM events ORDER BY id DESC LIMIT ?1")?;
-    let rows = stmt.query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
-pub fn recent_search_queries(conn: &Connection, limit: i64) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT tags_json FROM events WHERE action = 'search' ORDER BY id DESC LIMIT ?1",
-    )?;
-    let rows = stmt.query_map([limit], |r| {
-        let tags_json: String = r.get(0)?;
-        Ok(tags_json)
-    })?;
-    let mut queries = Vec::new();
-    for row in rows {
-        let tags_json = row?;
-        if let Ok(tags) = serde_json::from_str::<Vec<String>>(&tags_json) {
-            if let Some(q) = tags.first() {
-                if !q.is_empty() {
-                    queries.push(q.clone());
-                }
-            }
-        }
-    }
-    Ok(queries)
-}
-
-pub fn upsert_embedding(conn: &Connection, ref_uuid: &Uuid, vector: &[f32]) -> Result<()> {
-    let vector_json = serde_json::to_string(vector)?;
-    conn.execute(
-        "INSERT INTO embeddings (ref_uuid, vector_json) VALUES (?1, ?2)
-         ON CONFLICT(ref_uuid) DO UPDATE SET vector_json = excluded.vector_json",
-        rusqlite::params![ref_uuid.to_string(), vector_json],
-    )?;
-    Ok(())
-}
-
-pub fn all_embeddings(conn: &Connection) -> Result<Vec<(String, Vec<f32>)>> {
-    let mut stmt = conn.prepare("SELECT ref_uuid, vector_json FROM embeddings")?;
-    let rows = stmt.query_map([], |r| {
-        let uuid: String = r.get(0)?;
-        let json: String = r.get(1)?;
-        let vec: Vec<f32> = serde_json::from_str(&json).unwrap_or_default();
-        Ok((uuid, vec))
-    })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }

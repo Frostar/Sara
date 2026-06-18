@@ -218,15 +218,15 @@ pub fn inline_schema_for_openai(mut schema: serde_json::Value) -> serde_json::Va
             serde_json::Value::Bool(false),
         );
         // Make all properties required
-        if let Some(props) = obj.get("properties") {
-            if let Some(keys) = props.as_object().map(|m| {
+        if let Some(props) = obj.get("properties")
+            && let Some(keys) = props.as_object().map(|m| {
                 m.keys()
                     .cloned()
                     .map(serde_json::Value::String)
                     .collect::<Vec<_>>()
-            }) {
-                obj.insert("required".to_string(), serde_json::Value::Array(keys));
-            }
+            })
+        {
+            obj.insert("required".to_string(), serde_json::Value::Array(keys));
         }
     }
     schema

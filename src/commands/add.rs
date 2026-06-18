@@ -192,10 +192,10 @@ pub fn run(
     // Add selected deps
     let pending = db::list_tasks(conn, None)?;
     for &dep_idx in &form.selected_deps {
-        if let Some(dep_task) = pending.get(dep_idx) {
-            if let Err(e) = db::add_dependency(conn, &task.uuid, &dep_task.uuid) {
-                eprintln!("Warning: could not add dependency: {e}");
-            }
+        if let Some(dep_task) = pending.get(dep_idx)
+            && let Err(e) = db::add_dependency(conn, &task.uuid, &dep_task.uuid)
+        {
+            eprintln!("Warning: could not add dependency: {e}");
         }
     }
 

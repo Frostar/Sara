@@ -39,15 +39,15 @@ pub fn parse_due(s: &str, dialect_str: &str) -> Option<DateTime<Utc>> {
 
     // Relative: +3d, +2w
     if let Some(rest) = s.strip_prefix('+') {
-        if let Some(days_str) = rest.strip_suffix('d') {
-            if let Ok(days) = days_str.trim().parse::<i64>() {
-                return Some(Utc::now() + chrono::Duration::days(days));
-            }
+        if let Some(days_str) = rest.strip_suffix('d')
+            && let Ok(days) = days_str.trim().parse::<i64>()
+        {
+            return Some(Utc::now() + chrono::Duration::days(days));
         }
-        if let Some(weeks_str) = rest.strip_suffix('w') {
-            if let Ok(weeks) = weeks_str.trim().parse::<i64>() {
-                return Some(Utc::now() + chrono::Duration::weeks(weeks));
-            }
+        if let Some(weeks_str) = rest.strip_suffix('w')
+            && let Ok(weeks) = weeks_str.trim().parse::<i64>()
+        {
+            return Some(Utc::now() + chrono::Duration::weeks(weeks));
         }
     }
 

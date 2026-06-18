@@ -242,10 +242,10 @@ impl<'a> FormState<'a> {
     }
 
     fn toggle_dep(&mut self) {
-        if let Some(i) = self.dep_state.selected() {
-            if i < self.selected_deps.len() {
-                self.selected_deps[i] = !self.selected_deps[i];
-            }
+        if let Some(i) = self.dep_state.selected()
+            && i < self.selected_deps.len()
+        {
+            self.selected_deps[i] = !self.selected_deps[i];
         }
     }
 

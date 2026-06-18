@@ -1,12 +1,12 @@
 use anyhow::Result;
-use chrono::{Datelike, Duration, Local, NaiveDate, Utc, Weekday};
+use chrono::{Datelike, Duration, Local, NaiveDate};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
-    Frame, Terminal,
+    Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -51,15 +51,15 @@ pub fn run(conn: &Connection, project: Option<&str>) -> Result<()> {
                 longest_streak,
             )
         })?;
-        if event::poll(std::time::Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Release {
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => break,
-                    _ => {}
-                }
+        if event::poll(std::time::Duration::from_millis(200))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind == KeyEventKind::Release {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => break,
+                _ => {}
             }
         }
     }
@@ -143,7 +143,7 @@ fn render(
     let cell_width = CELL.len() as u16 + 1; // "██ "
     let label_width: u16 = 4; // "Mon " etc.
     let available_width = area.width.saturating_sub(label_width + 2);
-    let num_weeks = ((available_width / cell_width) as i64).min(52).max(4);
+    let num_weeks = ((available_width / cell_width) as i64).clamp(4, 52);
 
     let grid_start = grid_end - Duration::weeks(num_weeks) + Duration::days(1);
 

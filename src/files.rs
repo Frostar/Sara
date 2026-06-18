@@ -23,14 +23,14 @@ pub fn collect_project_files(root: &Path) -> Vec<String> {
             continue;
         }
         // Skip large files
-        if let Ok(meta) = path.metadata() {
-            if meta.len() > MAX_FILE_SIZE {
-                continue;
-            }
+        if let Ok(meta) = path.metadata()
+            && meta.len() > MAX_FILE_SIZE
+        {
+            continue;
         }
         // Skip binary-ish extensions
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if matches!(
+        if let Some(ext) = path.extension().and_then(|e| e.to_str())
+            && matches!(
                 ext.to_lowercase().as_str(),
                 "png"
                     | "jpg"
@@ -51,9 +51,9 @@ pub fn collect_project_files(root: &Path) -> Vec<String> {
                     | "gz"
                     | "pdf"
                     | "lock"
-            ) {
-                continue;
-            }
+            )
+        {
+            continue;
         }
         if let Ok(rel) = path.strip_prefix(root) {
             files.push(rel.to_string_lossy().to_string());

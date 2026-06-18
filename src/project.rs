@@ -9,12 +9,11 @@ pub fn find_git_root(start: &Path) -> Option<PathBuf> {
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(start)
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
         }
     }
 
@@ -126,16 +125,15 @@ pub fn detect_current_project(
         let path_str = canonical.to_string_lossy().to_string();
 
         // Check for path collision (same name, different path)
-        if let Some(existing) = crate::db::get_project(conn, &name)? {
-            if let Some(ref existing_path) = existing.path {
-                if existing_path != &path_str {
-                    eprintln!(
-                        "Warning: project '{}' is already registered at {}. \
+        if let Some(existing) = crate::db::get_project(conn, &name)?
+            && let Some(ref existing_path) = existing.path
+            && existing_path != &path_str
+        {
+            eprintln!(
+                "Warning: project '{}' is already registered at {}. \
                          Using existing name. Use --project to override.",
-                        name, existing_path
-                    );
-                }
-            }
+                name, existing_path
+            );
         }
 
         crate::db::upsert_project_seen(conn, &name, Some(&path_str))?;

@@ -144,15 +144,15 @@ fn open_url(raw: &str) {
 /// Pick the user's terminal editor: $VISUAL, then $EDITOR, then the first of
 /// nvim/vim/nano that exists on PATH.
 fn editor_command() -> String {
-    if let Ok(v) = std::env::var("VISUAL") {
-        if !v.trim().is_empty() {
-            return v;
-        }
+    if let Ok(v) = std::env::var("VISUAL")
+        && !v.trim().is_empty()
+    {
+        return v;
     }
-    if let Ok(v) = std::env::var("EDITOR") {
-        if !v.trim().is_empty() {
-            return v;
-        }
+    if let Ok(v) = std::env::var("EDITOR")
+        && !v.trim().is_empty()
+    {
+        return v;
     }
     for candidate in ["nvim", "vim", "nano", "vi"] {
         if std::process::Command::new("which")
@@ -587,12 +587,12 @@ fn edit_loop<B: Backend>(
                     None => {}
                 },
                 KeyCode::Char(' ') => {
-                    if let Some(Focusable::Checklist(i)) = &current {
-                        if let Some(item) = st.detail.checklist.get(*i) {
-                            let _ = db::toggle_checklist_item(conn, item.id);
-                            st.detail.checklist =
-                                db::get_checklist(conn, &st.detail.task.uuid).unwrap_or_default();
-                        }
+                    if let Some(Focusable::Checklist(i)) = &current
+                        && let Some(item) = st.detail.checklist.get(*i)
+                    {
+                        let _ = db::toggle_checklist_item(conn, item.id);
+                        st.detail.checklist =
+                            db::get_checklist(conn, &st.detail.task.uuid).unwrap_or_default();
                     }
                 }
                 _ => {}
@@ -1228,7 +1228,7 @@ fn render_project_stats(f: &mut Frame, area: ratatui::layout::Rect, d: &Detail) 
     };
 
     let w = inner.width.saturating_sub(2) as usize;
-    let bar_w = w.saturating_sub(16).min(10).max(3);
+    let bar_w = w.saturating_sub(16).clamp(3, 10);
 
     let mut lines: Vec<Line> = vec![];
 
@@ -1368,7 +1368,7 @@ fn render_mini_heatmap(
     counts: &std::collections::HashMap<chrono::NaiveDate, u32>,
     project: &str,
 ) {
-    use chrono::{Datelike, Duration, Local, Utc};
+    use chrono::{Datelike, Duration, Local};
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1387,9 +1387,7 @@ fn render_mini_heatmap(
     // Fit weeks into available inner width: label(4) + weeks * 3
     let cell_w: u16 = 3; // "██ "
     let label_w: u16 = 4;
-    let num_weeks = ((inner.width.saturating_sub(label_w)) / cell_w)
-        .min(16)
-        .max(4) as i64;
+    let num_weeks = ((inner.width.saturating_sub(label_w)) / cell_w).clamp(4, 16) as i64;
     let grid_start = grid_end - Duration::weeks(num_weeks) + Duration::days(1);
 
     // Month label row (row 0 of inner)
@@ -1799,17 +1797,17 @@ fn parse_duration_to_mins(s: &str) -> Option<i64> {
     let s_lower = s.to_lowercase();
     let rest = s_lower.as_str();
     // Parse hours (handles "2h", "2h30m", "2h 30m")
-    if let Some(h_pos) = rest.find('h') {
-        if let Ok(h) = rest[..h_pos].trim().parse::<i64>() {
-            let mut total = h * 60;
-            let after_h = rest[h_pos + 1..].trim().trim_end_matches('m').trim();
-            if !after_h.is_empty() {
-                if let Ok(m) = after_h.parse::<i64>() {
-                    total += m;
-                }
-            }
-            return Some(total);
+    if let Some(h_pos) = rest.find('h')
+        && let Ok(h) = rest[..h_pos].trim().parse::<i64>()
+    {
+        let mut total = h * 60;
+        let after_h = rest[h_pos + 1..].trim().trim_end_matches('m').trim();
+        if !after_h.is_empty()
+            && let Ok(m) = after_h.parse::<i64>()
+        {
+            total += m;
         }
+        return Some(total);
     }
     // "Ym" or bare number (minutes)
     let m_part = rest.trim_end_matches('m').trim();

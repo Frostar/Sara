@@ -131,20 +131,20 @@ pub fn advance_by_interval(base: DateTime<Utc>, interval: &str) -> DateTime<Utc>
         return add_months(base, 12);
     }
     // Numeric prefix: "Nd", "Nw", "Nm"
-    if let Some(stripped) = s.strip_suffix('d') {
-        if let Ok(n) = stripped.parse::<i64>() {
-            return base + chrono::Duration::days(n);
-        }
+    if let Some(stripped) = s.strip_suffix('d')
+        && let Ok(n) = stripped.parse::<i64>()
+    {
+        return base + chrono::Duration::days(n);
     }
-    if let Some(stripped) = s.strip_suffix('w') {
-        if let Ok(n) = stripped.parse::<i64>() {
-            return base + chrono::Duration::weeks(n);
-        }
+    if let Some(stripped) = s.strip_suffix('w')
+        && let Ok(n) = stripped.parse::<i64>()
+    {
+        return base + chrono::Duration::weeks(n);
     }
-    if let Some(stripped) = s.strip_suffix('m') {
-        if let Ok(n) = stripped.parse::<i64>() {
-            return add_months(base, n as u32);
-        }
+    if let Some(stripped) = s.strip_suffix('m')
+        && let Ok(n) = stripped.parse::<i64>()
+    {
+        return add_months(base, n as u32);
     }
     // Fallback: +1 week
     base + chrono::Duration::weeks(1)
