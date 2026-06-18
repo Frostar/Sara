@@ -155,8 +155,7 @@ impl Config {
 }
 
 pub fn project_dirs() -> Result<ProjectDirs> {
-    ProjectDirs::from("", "", "sara")
-        .context("Could not determine home directory")
+    ProjectDirs::from("", "", "sara").context("Could not determine home directory")
 }
 
 fn legacy_tk_project_dirs() -> Option<ProjectDirs> {
@@ -240,8 +239,7 @@ pub fn load() -> Result<Config> {
     }
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read config: {}", path.display()))?;
-    toml::from_str(&content)
-        .with_context(|| format!("Failed to parse config: {}", path.display()))
+    toml::from_str(&content).with_context(|| format!("Failed to parse config: {}", path.display()))
 }
 
 pub fn save(cfg: &Config) -> Result<()> {
@@ -286,17 +284,27 @@ mod tests {
         }
         f();
         if let Some(h) = old_home {
-            unsafe { std::env::set_var("HOME", h); }
+            unsafe {
+                std::env::set_var("HOME", h);
+            }
         }
         if let Some(x) = old_xdg {
-            unsafe { std::env::set_var("XDG_CONFIG_HOME", x); }
+            unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", x);
+            }
         } else {
-            unsafe { std::env::remove_var("XDG_CONFIG_HOME"); }
+            unsafe {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            }
         }
         if let Some(d) = old_data {
-            unsafe { std::env::set_var("XDG_DATA_HOME", d); }
+            unsafe {
+                std::env::set_var("XDG_DATA_HOME", d);
+            }
         } else {
-            unsafe { std::env::remove_var("XDG_DATA_HOME"); }
+            unsafe {
+                std::env::remove_var("XDG_DATA_HOME");
+            }
         }
         let _ = fs::remove_dir_all(&home);
     }
@@ -340,7 +348,11 @@ mod tests {
 
             let tk_dir = tk_config_dir(&home);
             fs::create_dir_all(&tk_dir).unwrap();
-            fs::write(tk_dir.join("config.toml"), "default_project = \"tk-only\"\n").unwrap();
+            fs::write(
+                tk_dir.join("config.toml"),
+                "default_project = \"tk-only\"\n",
+            )
+            .unwrap();
 
             let sara_dir = sara_config_dir(&home);
             fs::create_dir_all(&sara_dir).unwrap();

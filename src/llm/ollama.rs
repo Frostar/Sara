@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::time::Duration;
 
-use super::{EnrichmentRequest, EnrichmentResponse, ItemEnrichmentRequest, LlmProvider, system_prompt, user_prompt};
+use super::{
+    EnrichmentRequest, EnrichmentResponse, ItemEnrichmentRequest, LlmProvider, system_prompt,
+    user_prompt,
+};
 use crate::config::LlmConfig;
 
 pub struct OllamaProvider {
@@ -54,7 +57,8 @@ impl LlmProvider for OllamaProvider {
         if resp.status() == 404 {
             anyhow::bail!(
                 "Ollama model '{}' not found. Run: ollama pull {}",
-                self.model, self.model
+                self.model,
+                self.model
             );
         }
 
@@ -74,7 +78,7 @@ impl LlmProvider for OllamaProvider {
     }
 
     fn enrich_item(&self, req: &ItemEnrichmentRequest) -> Result<super::ItemEnrichmentResponse> {
-        use super::{item_system_prompt, item_user_prompt, ItemEnrichmentResponse};
+        use super::{ItemEnrichmentResponse, item_system_prompt, item_user_prompt};
         let schema = schemars::schema_for!(ItemEnrichmentResponse);
         let schema_val = serde_json::to_value(&schema)?;
 

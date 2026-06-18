@@ -30,11 +30,10 @@ pub fn run(conn: &Connection, id_or_uuid: &str, clear: bool) -> Result<()> {
     })?;
 
     db::set_task_branch(conn, &task.uuid, &branch)?;
+    println!("Tied task {} to branch '{}'.", task.id.unwrap_or(0), branch);
     println!(
-        "Tied task {} to branch '{}'.",
-        task.id.unwrap_or(0),
-        branch
+        "Run `sara stop {}` to snapshot changed files.",
+        task.id.unwrap_or(0)
     );
-    println!("Run `sara stop {}` to snapshot changed files.", task.id.unwrap_or(0));
     Ok(())
 }

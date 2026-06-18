@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
-use rusqlite_migration::{Migrations, M};
+use rusqlite_migration::{M, Migrations};
 
 use crate::config;
 use crate::model::{Item, Priority, Project, Status, Task};
@@ -251,8 +251,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     })
 }
 
-const TASK_COLUMNS: &str =
-    "uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins,recur";
+const TASK_COLUMNS: &str = "uuid,id,description,project,status,priority,due,entry,modified,end,tags_json,urgency,started_at,time_spent,estimate_mins,recur";
 
 // ── undo ─────────────────────────────────────────────────────────────────────
 
@@ -286,9 +285,9 @@ fn log_undo(
     after: Option<&Task>,
 ) -> Result<()> {
     let entry = UNDO_CTX.with(|c| {
-        c.borrow().as_ref().map(|ctx| {
-            (ctx.batch_id.clone(), ctx.command.clone())
-        })
+        c.borrow()
+            .as_ref()
+            .map(|ctx| (ctx.batch_id.clone(), ctx.command.clone()))
     });
     let Some((batch_id, command)) = entry else {
         return Ok(());
@@ -393,8 +392,8 @@ pub fn undo(conn: &Connection) -> Result<Option<String>> {
         match before_json {
             // Task existed before: restore that snapshot.
             Some(json) => {
-                let task: Task = serde_json::from_str(&json)
-                    .context("Failed to decode undo snapshot")?;
+                let task: Task =
+                    serde_json::from_str(&json).context("Failed to decode undo snapshot")?;
                 restore_task_row(conn, &task)?;
             }
             // Task was created by this command: removing it (and cascaded rows) undoes it.
@@ -500,7 +499,9 @@ pub fn resolve_task(conn: &Connection, id_or_uuid: &str) -> Result<Task> {
     if let Some(t) = get_task_by_uuid_prefix(conn, id_or_uuid)? {
         return Ok(t);
     }
-    Err(anyhow::anyhow!("No pending task with id or uuid matching '{id_or_uuid}'"))
+    Err(anyhow::anyhow!(
+        "No pending task with id or uuid matching '{id_or_uuid}'"
+    ))
 }
 
 pub fn list_tasks(conn: &Connection, project: Option<&str>) -> Result<Vec<Task>> {
@@ -559,11 +560,17 @@ fn tracked_field_values(t: &Task) -> [(&'static str, Option<String>); 9] {
         ("description", non_empty(&t.description)),
         ("project", non_empty(&t.project)),
         ("status", Some(t.status.to_string())),
-        ("priority", t.priority.as_ref().map(|p| p.label().to_string())),
+        (
+            "priority",
+            t.priority.as_ref().map(|p| p.label().to_string()),
+        ),
         (
             "due",
-            t.due
-                .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string()),
+            t.due.map(|d| {
+                d.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d")
+                    .to_string()
+            }),
         ),
         (
             "tags",
@@ -575,10 +582,7 @@ fn tracked_field_values(t: &Task) -> [(&'static str, Option<String>); 9] {
         ),
         ("estimate", t.estimate_mins.map(fmt_estimate)),
         ("recur", t.recur.clone()),
-        (
-            "timer",
-            t.started_at.map(|_| "running".to_string()),
-        ),
+        ("timer", t.started_at.map(|_| "running".to_string())),
     ]
 }
 
@@ -587,7 +591,11 @@ fn fmt_estimate(mins: i64) -> String {
     if mins >= 60 {
         let h = mins / 60;
         let r = mins % 60;
-        if r == 0 { format!("{h}h") } else { format!("{h}h{r}m") }
+        if r == 0 {
+            format!("{h}h")
+        } else {
+            format!("{h}h{r}m")
+        }
     } else {
         format!("{mins}m")
     }
@@ -642,9 +650,8 @@ fn record_changes(conn: &Connection, old: &Task, new: &Task) -> Result<()> {
 
 /// After completing a task, compact pending IDs to stay small
 pub fn repack_ids(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare(
-        "SELECT uuid FROM tasks WHERE status='pending' ORDER BY entry ASC",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT uuid FROM tasks WHERE status='pending' ORDER BY entry ASC")?;
     let uuids: Vec<String> = stmt
         .query_map([], |r| r.get(0))?
         .filter_map(|r| r.ok())
@@ -710,9 +717,8 @@ fn would_create_cycle(conn: &Connection, task: &Uuid, new_dep: &Uuid) -> Result<
         if !visited.insert(cur.clone()) {
             continue;
         }
-        let mut stmt = conn.prepare(
-            "SELECT depends_on_uuid FROM dependencies WHERE task_uuid=?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT depends_on_uuid FROM dependencies WHERE task_uuid=?1")?;
         let deps: Vec<String> = stmt
             .query_map([&cur], |r| r.get(0))?
             .filter_map(|r| r.ok())
@@ -737,9 +743,7 @@ pub fn get_blockers(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<Uuid>> {
 }
 
 pub fn get_blocking(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<Uuid>> {
-    let mut stmt = conn.prepare(
-        "SELECT task_uuid FROM dependencies WHERE depends_on_uuid=?1",
-    )?;
+    let mut stmt = conn.prepare("SELECT task_uuid FROM dependencies WHERE depends_on_uuid=?1")?;
     let uuids = stmt
         .query_map([task_uuid.to_string()], |r| r.get::<_, String>(0))?
         .filter_map(|r| r.ok())
@@ -767,9 +771,7 @@ impl DepInfo {
 /// Only pending tasks count as live blockers/dependents, matching the
 /// semantics of `get_blockers`/`get_blocking`. Computed in two batch queries
 /// so `sara list` stays O(1) in round-trips regardless of task count.
-pub fn dep_info_by_task(
-    conn: &Connection,
-) -> Result<std::collections::HashMap<String, DepInfo>> {
+pub fn dep_info_by_task(conn: &Connection) -> Result<std::collections::HashMap<String, DepInfo>> {
     let mut map: std::collections::HashMap<String, DepInfo> = std::collections::HashMap::new();
 
     // Pending blockers (with their display id) for each task.
@@ -797,9 +799,7 @@ pub fn dep_info_by_task(
          WHERE t.status='pending'
          GROUP BY d.depends_on_uuid",
     )?;
-    let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-    })?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
     for row in rows {
         let (dep_uuid, count) = row?;
         map.entry(dep_uuid).or_default().blocking = count as usize;
@@ -832,8 +832,10 @@ pub fn set_task_files_sourced(
     task_uuid: &Uuid,
     files: &[(String, String)],
 ) -> Result<()> {
-    let before: std::collections::HashSet<String> =
-        get_task_files(conn, task_uuid).unwrap_or_default().into_iter().collect();
+    let before: std::collections::HashSet<String> = get_task_files(conn, task_uuid)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
 
     conn.execute(
         "DELETE FROM task_files WHERE task_uuid=?1",
@@ -847,8 +849,7 @@ pub fn set_task_files_sourced(
     }
 
     // Log each added / removed path so the change shows up in task history.
-    let after: std::collections::HashSet<String> =
-        files.iter().map(|(p, _)| p.clone()).collect();
+    let after: std::collections::HashSet<String> = files.iter().map(|(p, _)| p.clone()).collect();
     for path in after.difference(&before) {
         record_history(conn, task_uuid, "file", None, Some(path))?;
     }
@@ -859,8 +860,7 @@ pub fn set_task_files_sourced(
 }
 
 pub fn get_task_files(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<String>> {
-    let mut stmt =
-        conn.prepare("SELECT path FROM task_files WHERE task_uuid=?1 ORDER BY path")?;
+    let mut stmt = conn.prepare("SELECT path FROM task_files WHERE task_uuid=?1 ORDER BY path")?;
     let paths = stmt
         .query_map([task_uuid.to_string()], |r| r.get::<_, String>(0))?
         .filter_map(|r| r.ok())
@@ -904,9 +904,8 @@ pub fn add_annotation(conn: &Connection, task_uuid: &Uuid, text: &str) -> Result
 }
 
 pub fn get_annotations(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<Annotation>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, text, entry FROM annotations WHERE task_uuid=?1 ORDER BY entry ASC",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT id, text, entry FROM annotations WHERE task_uuid=?1 ORDER BY entry ASC")?;
     let anns = stmt
         .query_map([task_uuid.to_string()], |row| {
             let entry_str: String = row.get(2)?;
@@ -984,7 +983,10 @@ pub fn derive_link_label(url: &str) -> Option<String> {
         let owner = parts[0];
         let repo = parts[1];
         let kind = parts[2];
-        let num = parts[3].split(|c: char| !c.is_ascii_digit()).next().unwrap_or("");
+        let num = parts[3]
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .unwrap_or("");
         let tag = match kind {
             "pull" => Some("PR"),
             "issues" => Some("Issue"),
@@ -1078,9 +1080,7 @@ pub fn delete_link(conn: &Connection, link_id: i64) -> Result<bool> {
     if n > 0 {
         if let Some((uuid_str, url, label)) = existing {
             if let Ok(uuid) = Uuid::parse_str(&uuid_str) {
-                let display = label
-                    .or_else(|| derive_link_label(&url))
-                    .unwrap_or(url);
+                let display = label.or_else(|| derive_link_label(&url)).unwrap_or(url);
                 record_history(conn, &uuid, "link", Some(&display), None)?;
             }
         }
@@ -1147,13 +1147,7 @@ pub fn set_task_branch(conn: &Connection, task_uuid: &Uuid, branch: &str) -> Res
            logged_at          = NULL",
         params![task_uuid.to_string(), branch],
     )?;
-    record_history(
-        conn,
-        task_uuid,
-        "branch",
-        prev.as_deref(),
-        Some(branch),
-    )?;
+    record_history(conn, task_uuid, "branch", prev.as_deref(), Some(branch))?;
     Ok(())
 }
 
@@ -1221,19 +1215,16 @@ pub fn branched_pending_in_project(
          WHERE t.project=?1 AND t.status='pending' AND t.uuid != ?2
          ORDER BY t.id ASC",
     )?;
-    let rows = stmt.query_map(
-        params![project, exclude_uuid.to_string()],
-        |row| {
-            Ok((
-                row.get::<_, Option<i64>>(0)?.unwrap_or(0),
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-            ))
-        },
-    )?;
+    let rows = stmt.query_map(params![project, exclude_uuid.to_string()], |row| {
+        Ok((
+            row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+        ))
+    })?;
     let mut result = vec![];
     for row in rows {
         let (id, desc, branch, base, files_json, logged_at) = row?;
@@ -1570,15 +1561,25 @@ mod tests {
     fn add_and_get_links_with_history() {
         let conn = mem();
         let task = seed_task(&conn);
-        add_link(&conn, &task.uuid, "https://github.com/acme/widgets/pull/42", None).unwrap();
+        add_link(
+            &conn,
+            &task.uuid,
+            "https://github.com/acme/widgets/pull/42",
+            None,
+        )
+        .unwrap();
         let links = get_links(&conn, &task.uuid).unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].display(), "PR #42 · acme/widgets");
 
         // History event recorded for the added link.
         let history = get_history(&conn, &task.uuid).unwrap();
-        assert!(history.iter().any(|h| h.field == "link"
-            && h.new_value.as_deref() == Some("PR #42 · acme/widgets")));
+        assert!(
+            history
+                .iter()
+                .any(|h| h.field == "link"
+                    && h.new_value.as_deref() == Some("PR #42 · acme/widgets"))
+        );
     }
 
     #[test]
@@ -1591,9 +1592,11 @@ mod tests {
         assert!(get_links(&conn, &task.uuid).unwrap().is_empty());
 
         let history = get_history(&conn, &task.uuid).unwrap();
-        assert!(history
-            .iter()
-            .any(|h| h.field == "link" && h.old_value.as_deref() == Some("My link")));
+        assert!(
+            history
+                .iter()
+                .any(|h| h.field == "link" && h.old_value.as_deref() == Some("My link"))
+        );
     }
 
     #[test]
@@ -1626,15 +1629,19 @@ mod tests {
         begin_undo_batch("add demo");
         let mut task = Task::new("demo".into(), "tk".into());
         insert_task(&conn, &mut task).unwrap();
-        assert!(get_task_by_uuid_prefix(&conn, &task.uuid.to_string())
-            .unwrap()
-            .is_some());
+        assert!(
+            get_task_by_uuid_prefix(&conn, &task.uuid.to_string())
+                .unwrap()
+                .is_some()
+        );
 
         let undone = undo(&conn).unwrap();
         assert_eq!(undone.as_deref(), Some("add demo"));
-        assert!(get_task_by_uuid_prefix(&conn, &task.uuid.to_string())
-            .unwrap()
-            .is_none());
+        assert!(
+            get_task_by_uuid_prefix(&conn, &task.uuid.to_string())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1671,12 +1678,19 @@ mod tests {
     fn set_task_files_sourced_replaces_previous() {
         let conn = mem();
         let task = seed_task(&conn);
-        set_task_files_sourced(&conn, &task.uuid, &[("x.rs".into(), SOURCE_SUGGESTED.into())])
-            .unwrap();
+        set_task_files_sourced(
+            &conn,
+            &task.uuid,
+            &[("x.rs".into(), SOURCE_SUGGESTED.into())],
+        )
+        .unwrap();
         set_task_files_sourced(&conn, &task.uuid, &[("y.rs".into(), SOURCE_MANUAL.into())])
             .unwrap();
         let sourced = get_task_files_sourced(&conn, &task.uuid).unwrap();
-        assert_eq!(sourced, vec![("y.rs".to_string(), SOURCE_MANUAL.to_string())]);
+        assert_eq!(
+            sourced,
+            vec![("y.rs".to_string(), SOURCE_MANUAL.to_string())]
+        );
     }
 }
 
@@ -1719,15 +1733,36 @@ pub fn compute_urgency_breakdown(
         0.0
     };
 
-    let blocking = if blocking_count > 0 { cfg.blocking } else { 0.0 };
+    let blocking = if blocking_count > 0 {
+        cfg.blocking
+    } else {
+        0.0
+    };
     let blocked = if is_blocked { cfg.blocked } else { 0.0 };
     let active = if task.is_active() { cfg.active } else { 0.0 };
-    let tags = if !task.tags.is_empty() { cfg.has_tags } else { 0.0 };
-    let project = if task.project != "inbox" { cfg.project } else { 0.0 };
+    let tags = if !task.tags.is_empty() {
+        cfg.has_tags
+    } else {
+        0.0
+    };
+    let project = if task.project != "inbox" {
+        cfg.project
+    } else {
+        0.0
+    };
     let age_days = (Utc::now() - task.entry).num_days() as f64;
     let age = cfg.age * (age_days / cfg.age_max).min(1.0);
 
-    UrgencyBreakdown { priority, due, blocking, blocked, active, tags, project, age }
+    UrgencyBreakdown {
+        priority,
+        due,
+        blocking,
+        blocked,
+        active,
+        tags,
+        project,
+        age,
+    }
 }
 
 // ── similar tasks ─────────────────────────────────────────────────────────────
@@ -1861,12 +1896,17 @@ pub fn activity_counts(
     project: Option<&str>,
 ) -> Result<std::collections::HashMap<chrono::NaiveDate, u32>> {
     use chrono::TimeZone;
-    let mut map: std::collections::HashMap<chrono::NaiveDate, u32> = std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<chrono::NaiveDate, u32> =
+        std::collections::HashMap::new();
     let since = (Utc::now() - chrono::Duration::days(days as i64))
         .format("%Y-%m-%d")
         .to_string();
 
-    let proj_filter = if project.is_some() { "AND project=?2" } else { "" };
+    let proj_filter = if project.is_some() {
+        "AND project=?2"
+    } else {
+        ""
+    };
 
     // Tasks created
     {
@@ -1919,7 +1959,11 @@ pub fn activity_counts(
         } else {
             ""
         };
-        let proj_where = if project.is_some() { "AND t.project=?2" } else { "" };
+        let proj_where = if project.is_some() {
+            "AND t.project=?2"
+        } else {
+            ""
+        };
         let sql = format!(
             "SELECT substr(h.changed_at,1,10), COUNT(*) FROM task_history h {proj_join}
              WHERE h.changed_at >= ?1 {proj_where}
@@ -1947,7 +1991,11 @@ pub fn activity_counts(
 
 /// Returns (total_created, total_completed, current_streak_days, longest_streak_days)
 pub fn activity_stats(conn: &Connection, project: Option<&str>) -> Result<(u32, u32, u32, u32)> {
-    let proj_filter = if project.is_some() { "WHERE project=?1" } else { "" };
+    let proj_filter = if project.is_some() {
+        "WHERE project=?1"
+    } else {
+        ""
+    };
 
     let created: u32 = if let Some(p) = project {
         conn.query_row(
@@ -2059,7 +2107,8 @@ pub fn project_stats(conn: &Connection, project: &str) -> Result<ProjectStats> {
 
     let pending: u32 = conn.query_row(
         "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending'",
-        [project], |r| r.get(0),
+        [project],
+        |r| r.get(0),
     )?;
     let active: u32 = conn.query_row(
         "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND started_at IS NOT NULL",
@@ -2067,23 +2116,28 @@ pub fn project_stats(conn: &Connection, project: &str) -> Result<ProjectStats> {
     )?;
     let completed_total: u32 = conn.query_row(
         "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='completed'",
-        [project], |r| r.get(0),
+        [project],
+        |r| r.get(0),
     )?;
     let high: u32 = conn.query_row(
         "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='H'",
-        [project], |r| r.get(0),
+        [project],
+        |r| r.get(0),
     )?;
     let medium: u32 = conn.query_row(
         "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='M'",
-        [project], |r| r.get(0),
+        [project],
+        |r| r.get(0),
     )?;
     let low: u32 = conn.query_row(
         "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority='L'",
-        [project], |r| r.get(0),
+        [project],
+        |r| r.get(0),
     )?;
     let no_pri: u32 = conn.query_row(
         "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND priority IS NULL",
-        [project], |r| r.get(0),
+        [project],
+        |r| r.get(0),
     )?;
     let overdue: u32 = conn.query_row(
         "SELECT COUNT(*) FROM tasks WHERE project=?1 AND status='pending' AND due IS NOT NULL AND due < ?2",
@@ -2098,7 +2152,18 @@ pub fn project_stats(conn: &Connection, project: &str) -> Result<ProjectStats> {
         rusqlite::params![project, now_str, week_str], |r| r.get(0),
     )?;
 
-    Ok(ProjectStats { pending, active, completed_total, high, medium, low, no_pri, overdue, due_today, due_week })
+    Ok(ProjectStats {
+        pending,
+        active,
+        completed_total,
+        high,
+        medium,
+        low,
+        no_pri,
+        overdue,
+        due_today,
+        due_week,
+    })
 }
 
 // ── items (notes & links) ───────────────────────────────────────────────────
@@ -2259,13 +2324,12 @@ pub fn record_event(
     Ok(())
 }
 
-pub fn recent_events(conn: &Connection, limit: i64) -> Result<Vec<(String, Option<String>, String)>> {
-    let mut stmt = conn.prepare(
-        "SELECT action, kind, at FROM events ORDER BY id DESC LIMIT ?1",
-    )?;
-    let rows = stmt.query_map([limit], |r| {
-        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-    })?;
+pub fn recent_events(
+    conn: &Connection,
+    limit: i64,
+) -> Result<Vec<(String, Option<String>, String)>> {
+    let mut stmt = conn.prepare("SELECT action, kind, at FROM events ORDER BY id DESC LIMIT ?1")?;
+    let rows = stmt.query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 

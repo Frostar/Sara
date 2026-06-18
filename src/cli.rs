@@ -232,9 +232,7 @@ pub enum ProviderAction {
     /// List configured provider profiles and show the active one
     List,
     /// Switch to a named profile (or "default" to revert to [llm] block)
-    Use {
-        name: String,
-    },
+    Use { name: String },
     /// Add a new named provider profile (and activate it)
     Add {
         /// Profile name (e.g. "azure", "mlx", "gpt4o")
@@ -253,9 +251,7 @@ pub enum ProviderAction {
         key: Option<String>,
     },
     /// Remove a named profile
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
 }
 
 #[derive(Debug, Subcommand)]

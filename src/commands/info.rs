@@ -14,7 +14,7 @@ use tui_textarea::TextArea;
 
 use crate::config::Config;
 use crate::db;
-use crate::model::{format_duration, Priority, Task};
+use crate::model::{Priority, Task, format_duration};
 use crate::tui;
 
 struct Detail {
@@ -214,8 +214,8 @@ fn load_detail(conn: &Connection, cfg: &Config, task: Task) -> Result<Detail> {
     let overlaps = compute_overlaps(conn, &task, &branch);
 
     // Similar tasks (shared tags, same project)
-    let similar = db::similar_tasks(conn, &task.uuid, &task.project, &task.tags)
-        .unwrap_or_default();
+    let similar =
+        db::similar_tasks(conn, &task.uuid, &task.project, &task.tags).unwrap_or_default();
 
     // Checklist
     let checklist = db::get_checklist(conn, &task.uuid).unwrap_or_default();
@@ -224,7 +224,10 @@ fn load_detail(conn: &Connection, cfg: &Config, task: Task) -> Result<Detail> {
     let blockers = db::get_blockers(conn, &task.uuid).unwrap_or_default();
     let blocking_tasks = db::get_blocking(conn, &task.uuid).unwrap_or_default();
     let urgency_breakdown = Some(db::compute_urgency_breakdown(
-        &task, &cfg.urgency, !blockers.is_empty(), blocking_tasks.len(),
+        &task,
+        &cfg.urgency,
+        !blockers.is_empty(),
+        blocking_tasks.len(),
     ));
 
     // Activity heatmap for the project (last 16 weeks)
@@ -380,8 +383,8 @@ fn compute_overlaps(
         return vec![];
     }
 
-    let others = db::branched_pending_in_project(conn, &task.project, &task.uuid)
-        .unwrap_or_default();
+    let others =
+        db::branched_pending_in_project(conn, &task.project, &task.uuid).unwrap_or_default();
 
     let mut result = vec![];
     for (id, desc, other_rec) in others {
@@ -577,8 +580,8 @@ fn edit_loop<B: Backend>(
                     Some(Focusable::Checklist(i)) => {
                         if let Some(item) = st.detail.checklist.get(i) {
                             let _ = db::toggle_checklist_item(conn, item.id);
-                            st.detail.checklist = db::get_checklist(conn, &st.detail.task.uuid)
-                                .unwrap_or_default();
+                            st.detail.checklist =
+                                db::get_checklist(conn, &st.detail.task.uuid).unwrap_or_default();
                         }
                     }
                     None => {}
@@ -587,8 +590,8 @@ fn edit_loop<B: Backend>(
                     if let Some(Focusable::Checklist(i)) = &current {
                         if let Some(item) = st.detail.checklist.get(*i) {
                             let _ = db::toggle_checklist_item(conn, item.id);
-                            st.detail.checklist = db::get_checklist(conn, &st.detail.task.uuid)
-                                .unwrap_or_default();
+                            st.detail.checklist =
+                                db::get_checklist(conn, &st.detail.task.uuid).unwrap_or_default();
                         }
                     }
                 }
@@ -627,7 +630,11 @@ fn current_value(task: &Task, field: EditField) -> String {
                 if m >= 60 {
                     let h = m / 60;
                     let rem = m % 60;
-                    if rem == 0 { format!("{h}h") } else { format!("{h}h{rem}m") }
+                    if rem == 0 {
+                        format!("{h}h")
+                    } else {
+                        format!("{h}h{rem}m")
+                    }
                 } else {
                     format!("{m}m")
                 }
@@ -706,13 +713,21 @@ fn save(conn: &Connection, cfg: &Config, detail: &mut Detail) -> Result<()> {
     detail.branch = db::get_task_branch(conn, &detail.task.uuid);
     detail.overlaps = compute_overlaps(conn, &detail.task, &detail.branch);
     // Reload similar tasks and checklist after any save.
-    detail.similar = db::similar_tasks(conn, &detail.task.uuid, &detail.task.project, &detail.task.tags)
-        .unwrap_or_default();
+    detail.similar = db::similar_tasks(
+        conn,
+        &detail.task.uuid,
+        &detail.task.project,
+        &detail.task.tags,
+    )
+    .unwrap_or_default();
     detail.checklist = db::get_checklist(conn, &detail.task.uuid).unwrap_or_default();
     let blockers = db::get_blockers(conn, &detail.task.uuid).unwrap_or_default();
     let blocking_tasks = db::get_blocking(conn, &detail.task.uuid).unwrap_or_default();
     detail.urgency_breakdown = Some(db::compute_urgency_breakdown(
-        &detail.task, &cfg.urgency, !blockers.is_empty(), blocking_tasks.len(),
+        &detail.task,
+        &cfg.urgency,
+        !blockers.is_empty(),
+        blocking_tasks.len(),
     ));
     Ok(())
 }
@@ -729,12 +744,25 @@ fn render(f: &mut Frame, st: &EditState) {
 
     let constraints = if st.editing {
         if history_height > 0 {
-            vec![Constraint::Min(1), Constraint::Length(history_height), Constraint::Length(3), Constraint::Length(1)]
+            vec![
+                Constraint::Min(1),
+                Constraint::Length(history_height),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ]
         } else {
-            vec![Constraint::Min(1), Constraint::Length(3), Constraint::Length(1)]
+            vec![
+                Constraint::Min(1),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ]
         }
     } else if history_height > 0 {
-        vec![Constraint::Min(1), Constraint::Length(history_height), Constraint::Length(1)]
+        vec![
+            Constraint::Min(1),
+            Constraint::Length(history_height),
+            Constraint::Length(1),
+        ]
     } else {
         vec![Constraint::Min(1), Constraint::Length(1)]
     };
@@ -785,7 +813,11 @@ fn render(f: &mut Frame, st: &EditState) {
         let deadline_str = if let Some(due) = t.due {
             let diff = (due - Utc::now()).num_days();
             if diff < 0 {
-                format!("  ·  {} day{} overdue", -diff, if diff == -1 { "" } else { "s" })
+                format!(
+                    "  ·  {} day{} overdue",
+                    -diff,
+                    if diff == -1 { "" } else { "s" }
+                )
             } else if diff == 0 {
                 "  ·  due today".to_string()
             } else if diff == 1 {
@@ -819,14 +851,31 @@ fn render(f: &mut Frame, st: &EditState) {
     };
     // Time spent / estimate on the same conceptual row
     {
-        let estimate_str = t.estimate_mins.map(|m| {
-            let spent_mins = t.total_time_spent() / 60;
-            let pct = if m > 0 { (spent_mins * 100 / m).min(999) } else { 0 };
-            format!(" / est {} ({pct}%)", if m >= 60 {
-                let h = m / 60; let r = m % 60;
-                if r == 0 { format!("{h}h") } else { format!("{h}h{r}m") }
-            } else { format!("{m}m") })
-        }).unwrap_or_default();
+        let estimate_str = t
+            .estimate_mins
+            .map(|m| {
+                let spent_mins = t.total_time_spent() / 60;
+                let pct = if m > 0 {
+                    (spent_mins * 100 / m).min(999)
+                } else {
+                    0
+                };
+                format!(
+                    " / est {} ({pct}%)",
+                    if m >= 60 {
+                        let h = m / 60;
+                        let r = m % 60;
+                        if r == 0 {
+                            format!("{h}h")
+                        } else {
+                            format!("{h}h{r}m")
+                        }
+                    } else {
+                        format!("{m}m")
+                    }
+                )
+            })
+            .unwrap_or_default();
         lines.push(Line::from(vec![
             key_span("Time spent"),
             Span::styled(
@@ -841,15 +890,35 @@ fn render(f: &mut Frame, st: &EditState) {
     {
         let breakdown_str = if let Some(ref bd) = d.urgency_breakdown {
             let mut parts = vec![];
-            if bd.priority != 0.0 { parts.push(format!("pri {:.1}", bd.priority)); }
-            if bd.due != 0.0       { parts.push(format!("due {:.1}", bd.due)); }
-            if bd.blocking != 0.0  { parts.push(format!("blocking {:.1}", bd.blocking)); }
-            if bd.blocked != 0.0   { parts.push(format!("blocked {:.1}", bd.blocked)); }
-            if bd.active != 0.0    { parts.push(format!("active {:.1}", bd.active)); }
-            if bd.age != 0.0       { parts.push(format!("age {:.1}", bd.age)); }
-            if bd.tags != 0.0      { parts.push(format!("tags {:.1}", bd.tags)); }
-            if bd.project != 0.0   { parts.push(format!("proj {:.1}", bd.project)); }
-            if parts.is_empty() { String::new() } else { format!("  ({})", parts.join(" + ")) }
+            if bd.priority != 0.0 {
+                parts.push(format!("pri {:.1}", bd.priority));
+            }
+            if bd.due != 0.0 {
+                parts.push(format!("due {:.1}", bd.due));
+            }
+            if bd.blocking != 0.0 {
+                parts.push(format!("blocking {:.1}", bd.blocking));
+            }
+            if bd.blocked != 0.0 {
+                parts.push(format!("blocked {:.1}", bd.blocked));
+            }
+            if bd.active != 0.0 {
+                parts.push(format!("active {:.1}", bd.active));
+            }
+            if bd.age != 0.0 {
+                parts.push(format!("age {:.1}", bd.age));
+            }
+            if bd.tags != 0.0 {
+                parts.push(format!("tags {:.1}", bd.tags));
+            }
+            if bd.project != 0.0 {
+                parts.push(format!("proj {:.1}", bd.project));
+            }
+            if parts.is_empty() {
+                String::new()
+            } else {
+                format!("  ({})", parts.join(" + "))
+            }
         } else {
             String::new()
         };
@@ -862,11 +931,17 @@ fn render(f: &mut Frame, st: &EditState) {
 
     lines.push(field_line(
         "Entered",
-        &t.entry.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string(),
+        &t.entry
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
     ));
     lines.push(field_line(
         "Modified",
-        &t.modified.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string(),
+        &t.modified
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
     ));
     lines.push(field_line("UUID", &t.uuid.to_string()));
 
@@ -887,7 +962,11 @@ fn render(f: &mut Frame, st: &EditState) {
     // Selected focusable (for highlighting files/links). Fields are handled
     // inline above via their index.
     let items = focusables(d);
-    let sel = if st.editing { None } else { items.get(st.selected).cloned() };
+    let sel = if st.editing {
+        None
+    } else {
+        items.get(st.selected).cloned()
+    };
     let file_selected = |path: &str| sel == Some(Focusable::File(path.to_string()));
 
     if !d.links.is_empty() {
@@ -901,10 +980,15 @@ fn render(f: &mut Frame, st: &EditState) {
                     .fg(Color::Blue)
                     .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
             } else {
-                Style::default().fg(Color::Blue).add_modifier(Modifier::UNDERLINED)
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::UNDERLINED)
             };
             let mut spans = vec![
-                Span::styled(format!("{marker}[{}] ", link.id), Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!("{marker}[{}] ", link.id),
+                    Style::default().fg(Color::Gray),
+                ),
                 Span::styled(link.display(), style),
             ];
             // Show the raw URL too when a label was derived/added.
@@ -951,14 +1035,27 @@ fn render(f: &mut Frame, st: &EditState) {
             let is_sel = sel == Some(Focusable::Checklist(i));
             let marker = if is_sel { "› " } else { "  " };
             let (box_str, text_style) = if item.done {
-                ("[x]", Style::default().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT))
+                (
+                    "[x]",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::CROSSED_OUT),
+                )
             } else if is_sel {
-                ("[ ]", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                (
+                    "[ ]",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 ("[ ]", Style::default())
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("{marker}{box_str} "), Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!("{marker}{box_str} "),
+                    Style::default().fg(Color::Gray),
+                ),
                 Span::styled(item.text.clone(), text_style),
             ]));
         }
@@ -971,7 +1068,10 @@ fn render(f: &mut Frame, st: &EditState) {
             lines.push(Line::from(vec![
                 Span::styled(format!("  #{id:<3} "), Style::default().fg(Color::Gray)),
                 Span::raw(desc.clone()),
-                Span::styled(format!("  urg {urg:.1}"), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("  urg {urg:.1}"),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]));
         }
     }
@@ -1048,7 +1148,10 @@ fn render(f: &mut Frame, st: &EditState) {
     // ── Edit bar (chunk index depends on whether history box is present)
     if st.editing {
         let edit_chunk_idx = if history_height > 0 { 2 } else { 1 };
-        let field = EDIT_FIELDS.get(st.selected).copied().unwrap_or(EditField::Description);
+        let field = EDIT_FIELDS
+            .get(st.selected)
+            .copied()
+            .unwrap_or(EditField::Description);
         let (title, border) = if st.due_error {
             (
                 format!(" Editing {} — invalid date ", field.label()),
@@ -1082,7 +1185,8 @@ fn render(f: &mut Frame, st: &EditState) {
     let footer = if st.editing {
         " type to edit  •  Enter confirm  •  Esc cancel ".to_string()
     } else {
-        " ↑/↓ move  •  Enter edit/open  •  ←/→ priority  •  PgUp/PgDn scroll  •  q close ".to_string()
+        " ↑/↓ move  •  Enter edit/open  •  ←/→ priority  •  PgUp/PgDn scroll  •  q close "
+            .to_string()
     };
     let footer_idx = chunks.len() - 1;
     f.render_widget(
@@ -1100,18 +1204,25 @@ fn render_project_stats(f: &mut Frame, area: ratatui::layout::Rect, d: &Detail) 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let Some(ref s) = d.stats else { return; };
+    let Some(ref s) = d.stats else {
+        return;
+    };
 
     // Mini bar: fill `width` chars proportionally
     let bar = |count: u32, total: u32, width: usize| -> String {
-        if total == 0 { return " ".repeat(width); }
+        if total == 0 {
+            return " ".repeat(width);
+        }
         let filled = ((count as f64 / total as f64) * width as f64).round() as usize;
         "█".repeat(filled.min(width))
     };
 
     let total_ever = s.pending + s.completed_total;
     let completion_rate = if total_ever > 0 {
-        format!("{:.0}%", s.completed_total as f64 / total_ever as f64 * 100.0)
+        format!(
+            "{:.0}%",
+            s.completed_total as f64 / total_ever as f64 * 100.0
+        )
     } else {
         "—".to_string()
     };
@@ -1123,63 +1234,127 @@ fn render_project_stats(f: &mut Frame, area: ratatui::layout::Rect, d: &Detail) 
 
     // Status counts
     lines.push(Line::from(vec![
-        Span::styled(format!("  {:<10}", "Pending"), Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("  {:<10}", "Pending"),
+            Style::default().fg(Color::Gray),
+        ),
         Span::raw(format!("{:>3}", s.pending)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("  {:<10}", "Active"), Style::default().fg(Color::Gray)),
-        Span::styled(format!("{:>3}", s.active), Style::default().fg(if s.active > 0 { Color::Green } else { Color::Reset })),
+        Span::styled(
+            format!("  {:<10}", "Active"),
+            Style::default().fg(Color::Gray),
+        ),
+        Span::styled(
+            format!("{:>3}", s.active),
+            Style::default().fg(if s.active > 0 {
+                Color::Green
+            } else {
+                Color::Reset
+            }),
+        ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("  {:<10}", "Done"), Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("  {:<10}", "Done"),
+            Style::default().fg(Color::Gray),
+        ),
         Span::raw(format!("{:>3}", s.completed_total)),
-        Span::styled(format!("  {}", completion_rate), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("  {}", completion_rate),
+            Style::default().fg(Color::DarkGray),
+        ),
     ]));
 
-    lines.push(Line::from(Span::styled("  ─────────────", Style::default().fg(Color::DarkGray))));
+    lines.push(Line::from(Span::styled(
+        "  ─────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     // Priority mini bars
     let pri_total = s.pending.max(1);
     lines.push(Line::from(vec![
-        Span::styled(format!("  {:<5}", "H"), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("{:<bar_w$}", bar(s.high, pri_total, bar_w)), Style::default().fg(Color::Red)),
+        Span::styled(
+            format!("  {:<5}", "H"),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:<bar_w$}", bar(s.high, pri_total, bar_w)),
+            Style::default().fg(Color::Red),
+        ),
         Span::styled(format!(" {}", s.high), Style::default().fg(Color::DarkGray)),
     ]));
     lines.push(Line::from(vec![
         Span::styled(format!("  {:<5}", "M"), Style::default().fg(Color::Yellow)),
-        Span::styled(format!("{:<bar_w$}", bar(s.medium, pri_total, bar_w)), Style::default().fg(Color::Yellow)),
-        Span::styled(format!(" {}", s.medium), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{:<bar_w$}", bar(s.medium, pri_total, bar_w)),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            format!(" {}", s.medium),
+            Style::default().fg(Color::DarkGray),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(format!("  {:<5}", "L"), Style::default().fg(Color::Green)),
-        Span::styled(format!("{:<bar_w$}", bar(s.low, pri_total, bar_w)), Style::default().fg(Color::Green)),
+        Span::styled(
+            format!("{:<bar_w$}", bar(s.low, pri_total, bar_w)),
+            Style::default().fg(Color::Green),
+        ),
         Span::styled(format!(" {}", s.low), Style::default().fg(Color::DarkGray)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("  {:<5}", "—"), Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{:<bar_w$}", bar(s.no_pri, pri_total, bar_w)), Style::default().fg(Color::DarkGray)),
-        Span::styled(format!(" {}", s.no_pri), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("  {:<5}", "—"),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            format!("{:<bar_w$}", bar(s.no_pri, pri_total, bar_w)),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            format!(" {}", s.no_pri),
+            Style::default().fg(Color::DarkGray),
+        ),
     ]));
 
-    lines.push(Line::from(Span::styled("  ─────────────", Style::default().fg(Color::DarkGray))));
+    lines.push(Line::from(Span::styled(
+        "  ─────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     // Due status
     if s.overdue > 0 {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:<10}", "Overdue"), Style::default().fg(Color::Red)),
-            Span::styled(format!("{:>3}", s.overdue), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("  {:<10}", "Overdue"),
+                Style::default().fg(Color::Red),
+            ),
+            Span::styled(
+                format!("{:>3}", s.overdue),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
         ]));
     }
     if s.due_today > 0 {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:<10}", "Today"), Style::default().fg(Color::Yellow)),
-            Span::styled(format!("{:>3}", s.due_today), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("  {:<10}", "Today"),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                format!("{:>3}", s.due_today),
+                Style::default().fg(Color::Yellow),
+            ),
         ]));
     }
     let due_later = s.due_week.saturating_sub(s.due_today);
     if due_later > 0 {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:<10}", "This week"), Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("  {:<10}", "This week"),
+                Style::default().fg(Color::Gray),
+            ),
             Span::raw(format!("{:>3}", due_later)),
         ]));
     }
@@ -1212,12 +1387,18 @@ fn render_mini_heatmap(
     // Fit weeks into available inner width: label(4) + weeks * 3
     let cell_w: u16 = 3; // "██ "
     let label_w: u16 = 4;
-    let num_weeks = ((inner.width.saturating_sub(label_w)) / cell_w).min(16).max(4) as i64;
+    let num_weeks = ((inner.width.saturating_sub(label_w)) / cell_w)
+        .min(16)
+        .max(4) as i64;
     let grid_start = grid_end - Duration::weeks(num_weeks) + Duration::days(1);
 
     // Month label row (row 0 of inner)
     {
-        let mut spans: Vec<Span> = vec![Span::raw(format!("{:<width$}", "", width = label_w as usize))];
+        let mut spans: Vec<Span> = vec![Span::raw(format!(
+            "{:<width$}",
+            "",
+            width = label_w as usize
+        ))];
         let mut last_month = 0u32;
         let mut ws = grid_start;
         for _ in 0..num_weeks {
@@ -1230,11 +1411,20 @@ fn render_mini_heatmap(
                 ));
                 last_month = m;
             } else {
-                spans.push(Span::raw(format!("{:<width$}", "", width = cell_w as usize)));
+                spans.push(Span::raw(format!(
+                    "{:<width$}",
+                    "",
+                    width = cell_w as usize
+                )));
             }
             ws += Duration::weeks(1);
         }
-        let month_area = ratatui::layout::Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 };
+        let month_area = ratatui::layout::Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: 1,
+        };
         f.render_widget(Paragraph::new(Line::from(spans)), month_area);
     }
 
@@ -1247,14 +1437,25 @@ fn render_mini_heatmap(
             break;
         }
         let mut spans: Vec<Span> = vec![];
-        let label = if SHOW_LABEL[row as usize] { DAY_LABELS[row as usize] } else { "   " };
-        spans.push(Span::styled(format!("{label} "), Style::default().fg(Color::DarkGray)));
+        let label = if SHOW_LABEL[row as usize] {
+            DAY_LABELS[row as usize]
+        } else {
+            "   "
+        };
+        spans.push(Span::styled(
+            format!("{label} "),
+            Style::default().fg(Color::DarkGray),
+        ));
 
         let mut ws = grid_start;
         for _ in 0..num_weeks {
             let day = ws + Duration::days(row as i64);
             let in_future = day > today;
-            let count = if in_future { 0 } else { counts.get(&day).copied().unwrap_or(0) };
+            let count = if in_future {
+                0
+            } else {
+                counts.get(&day).copied().unwrap_or(0)
+            };
             let color = if in_future {
                 Color::Rgb(12, 14, 18)
             } else {
@@ -1311,8 +1512,16 @@ fn heat_color_mini(count: u32, max: u32) -> Color {
 fn history_lines(history: &[crate::db::HistoryEntry]) -> Vec<Line<'static>> {
     let mut lines = vec![];
     for h in history.iter().rev() {
-        let date = h.changed_at.with_timezone(&Local).format("%m-%d %H:%M").to_string();
-        let label = if h.field == "annotation" { "comment" } else { &h.field };
+        let date = h
+            .changed_at
+            .with_timezone(&Local)
+            .format("%m-%d %H:%M")
+            .to_string();
+        let label = if h.field == "annotation" {
+            "comment"
+        } else {
+            &h.field
+        };
         let mut spans = vec![
             Span::styled(format!("  {date}  "), Style::default().fg(Color::DarkGray)),
             Span::styled(format!("{:<11} ", label), Style::default().fg(Color::Cyan)),
@@ -1370,7 +1579,12 @@ fn git_panel_lines(d: &Detail) -> Vec<Line<'static>> {
     // Branch name line
     lines.push(Line::from(vec![
         Span::styled("  Branch  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(rec.branch.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            rec.branch.clone(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]));
     if let Some(base) = &rec.base {
         lines.push(Line::from(vec![
@@ -1379,7 +1593,10 @@ fn git_panel_lines(d: &Detail) -> Vec<Line<'static>> {
         ]));
     }
     if let Some(logged_at) = rec.logged_at {
-        let ts = logged_at.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+        let ts = logged_at
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
         lines.push(Line::from(vec![
             Span::styled("  Logged  ", Style::default().fg(Color::DarkGray)),
             Span::styled(ts, Style::default().fg(Color::Gray)),
@@ -1407,7 +1624,11 @@ fn git_panel_lines(d: &Detail) -> Vec<Line<'static>> {
         Some(files) => {
             const MAX_FILES: usize = 20;
             lines.push(Line::from(Span::styled(
-                format!("  {} file{} changed", files.len(), if files.len() == 1 { "" } else { "s" }),
+                format!(
+                    "  {} file{} changed",
+                    files.len(),
+                    if files.len() == 1 { "" } else { "s" }
+                ),
                 Style::default().fg(Color::Yellow),
             )));
             for f in files.iter().take(MAX_FILES) {
@@ -1420,10 +1641,7 @@ fn git_panel_lines(d: &Detail) -> Vec<Line<'static>> {
                     Span::styled("    ", Style::default()),
                     Span::styled(name.to_string(), Style::default().fg(Color::Cyan)),
                     if name != f.as_str() {
-                        Span::styled(
-                            format!("  {}", f),
-                            Style::default().fg(Color::DarkGray),
-                        )
+                        Span::styled(format!("  {}", f), Style::default().fg(Color::DarkGray))
                     } else {
                         Span::raw("")
                     },
@@ -1443,11 +1661,16 @@ fn git_panel_lines(d: &Detail) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  ⚠  Potential overlaps",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )));
         for ov in &d.overlaps {
             lines.push(Line::from(vec![
-                Span::styled(format!("  [{:>2}] ", ov.id), Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!("  [{:>2}] ", ov.id),
+                    Style::default().fg(Color::Gray),
+                ),
                 Span::styled(
                     truncate_str(&ov.description, 20),
                     Style::default().fg(Color::Yellow),
@@ -1498,13 +1721,7 @@ fn nav_line<'a>(text: &str, color: Color, italic: bool, selected: bool) -> Line<
     ])
 }
 
-fn editable_line<'a>(
-    k: &str,
-    v: &str,
-    selected: bool,
-    field: EditField,
-    task: &Task,
-) -> Line<'a> {
+fn editable_line<'a>(k: &str, v: &str, selected: bool, field: EditField, task: &Task) -> Line<'a> {
     let marker = if selected { "› " } else { "  " };
     let key_style = if selected {
         Style::default()
@@ -1546,7 +1763,9 @@ fn due_value_span<'a>(task: &Task, fallback: &str) -> Span<'a> {
             Color::Reset
         };
         Span::styled(
-            dd.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string(),
+            dd.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string(),
             Style::default().fg(color),
         )
     } else {
@@ -1565,7 +1784,9 @@ fn field_line<'a>(k: &str, v: &str) -> Line<'a> {
 fn section(k: &str) -> Line<'static> {
     Line::from(Span::styled(
         k.to_string(),
-        Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
+        Style::default()
+            .add_modifier(Modifier::BOLD)
+            .fg(Color::Cyan),
     ))
 }
 
@@ -1611,15 +1832,26 @@ fn print_plain(d: &Detail) {
         "{:<14}{}",
         "Due",
         t.due
-            .map(|dd| dd.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
+            .map(|dd| dd
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string())
             .unwrap_or_else(|| "-".to_string())
     );
     println!(
         "{:<14}{}",
         "Tags",
-        if t.tags.is_empty() { "-".to_string() } else { t.tags.join(", ") }
+        if t.tags.is_empty() {
+            "-".to_string()
+        } else {
+            t.tags.join(", ")
+        }
     );
-    println!("{:<14}{}", "Time spent", format_duration(t.total_time_spent()));
+    println!(
+        "{:<14}{}",
+        "Time spent",
+        format_duration(t.total_time_spent())
+    );
     println!("{:<14}{:.1}", "Urgency", t.urgency);
     println!("{:<14}{}", "UUID", t.uuid);
     for b in &d.blocked_by {
@@ -1629,7 +1861,13 @@ fn print_plain(d: &Detail) {
         println!("{:<14}{}", "Blocking", b);
     }
     for link in &d.links {
-        println!("{:<14}[{}] {}  {}", "Link", link.id, link.display(), link.url);
+        println!(
+            "{:<14}[{}] {}  {}",
+            "Link",
+            link.id,
+            link.display(),
+            link.url
+        );
     }
     for file in &d.manual_files {
         println!("{:<14}{}", "File", file);

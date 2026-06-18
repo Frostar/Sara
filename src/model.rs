@@ -118,10 +118,18 @@ impl Task {
 pub fn advance_by_interval(base: DateTime<Utc>, interval: &str) -> DateTime<Utc> {
     let s = interval.trim().to_lowercase();
     // Named aliases
-    if s == "daily"   { return base + chrono::Duration::days(1); }
-    if s == "weekly"  { return base + chrono::Duration::weeks(1); }
-    if s == "monthly" { return add_months(base, 1); }
-    if s == "yearly"  { return add_months(base, 12); }
+    if s == "daily" {
+        return base + chrono::Duration::days(1);
+    }
+    if s == "weekly" {
+        return base + chrono::Duration::weeks(1);
+    }
+    if s == "monthly" {
+        return add_months(base, 1);
+    }
+    if s == "yearly" {
+        return add_months(base, 12);
+    }
     // Numeric prefix: "Nd", "Nw", "Nm"
     if let Some(stripped) = s.strip_suffix('d') {
         if let Ok(n) = stripped.parse::<i64>() {
@@ -159,9 +167,15 @@ fn add_months(dt: DateTime<Utc>, months: u32) -> DateTime<Utc> {
 
 fn days_in_month(year: i32, month: u32) -> u32 {
     match month {
-        1|3|5|7|8|10|12 => 31,
-        4|6|9|11 => 30,
-        2 => if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 29 } else { 28 },
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
         _ => 30,
     }
 }

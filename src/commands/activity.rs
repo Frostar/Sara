@@ -2,11 +2,11 @@ use anyhow::Result;
 use chrono::{Datelike, Duration, Local, NaiveDate, Utc, Weekday};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
+    Frame, Terminal,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Frame, Terminal,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -40,7 +40,17 @@ pub fn run(conn: &Connection, project: Option<&str>) -> Result<()> {
 
     let mut terminal = tui::init_terminal()?;
     loop {
-        terminal.draw(|f| render(f, &counts, project, total_created, total_completed, cur_streak, longest_streak))?;
+        terminal.draw(|f| {
+            render(
+                f,
+                &counts,
+                project,
+                total_created,
+                total_completed,
+                cur_streak,
+                longest_streak,
+            )
+        })?;
         if event::poll(std::time::Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Release {
@@ -95,7 +105,10 @@ fn render(
 
     // ── Stats bar ────────────────────────────────────────────────────────────
     let rate = if total_created > 0 {
-        format!("{:.0}%", total_completed as f64 / total_created as f64 * 100.0)
+        format!(
+            "{:.0}%",
+            total_completed as f64 / total_created as f64 * 100.0
+        )
     } else {
         "—".to_string()
     };
@@ -135,7 +148,11 @@ fn render(
     let grid_start = grid_end - Duration::weeks(num_weeks) + Duration::days(1);
 
     // month_labels: for each week column, what month starts in that column
-    let mut month_label_line: Vec<Span> = vec![Span::raw(format!("{:<width$}", "", width = label_width as usize))];
+    let mut month_label_line: Vec<Span> = vec![Span::raw(format!(
+        "{:<width$}",
+        "",
+        width = label_width as usize
+    ))];
     {
         let mut last_month = 0u32;
         let mut week_start = grid_start;
@@ -149,7 +166,11 @@ fn render(
                 ));
                 last_month = month;
             } else {
-                month_label_line.push(Span::raw(format!("{:<width$}", "", width = cell_width as usize)));
+                month_label_line.push(Span::raw(format!(
+                    "{:<width$}",
+                    "",
+                    width = cell_width as usize
+                )));
             }
             week_start += Duration::weeks(1);
         }
@@ -163,7 +184,11 @@ fn render(
     for row in 0..7u32 {
         let mut spans: Vec<Span> = vec![];
         // Day label (3 chars + space)
-        let label = if SHOW_LABEL[row as usize] { DAY_LABELS[row as usize] } else { "   " };
+        let label = if SHOW_LABEL[row as usize] {
+            DAY_LABELS[row as usize]
+        } else {
+            "   "
+        };
         spans.push(Span::styled(
             format!("{label} "),
             Style::default().fg(Color::DarkGray),
@@ -175,7 +200,11 @@ fn render(
             // grid_start is a Sunday, so offset by row days.
             let day = week_start + Duration::days(row as i64);
             let in_future = day > today;
-            let count = if in_future { 0 } else { counts.get(&day).copied().unwrap_or(0) };
+            let count = if in_future {
+                0
+            } else {
+                counts.get(&day).copied().unwrap_or(0)
+            };
 
             let color = if in_future {
                 Color::Rgb(12, 14, 18)
@@ -207,35 +236,43 @@ fn render(
         (6, "high"),
         (max, "peak"),
     ];
-    let mut legend_spans: Vec<Span> = vec![
-        Span::styled("    Less ", Style::default().fg(Color::DarkGray)),
-    ];
+    let mut legend_spans: Vec<Span> = vec![Span::styled(
+        "    Less ",
+        Style::default().fg(Color::DarkGray),
+    )];
     for (count, _) in &legend_levels {
         let color = heat_color(*count, max);
-        legend_spans.push(Span::styled(
-            CELL,
-            Style::default().bg(color).fg(color),
-        ));
+        legend_spans.push(Span::styled(CELL, Style::default().bg(color).fg(color)));
         legend_spans.push(Span::raw(" "));
     }
     legend_spans.push(Span::styled("More", Style::default().fg(Color::DarkGray)));
     legend_spans.push(Span::styled(
         "    q/Esc to close",
-        Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM),
     ));
     f.render_widget(Paragraph::new(Line::from(legend_spans)), chunks[3]);
 }
 
 fn stat_span(label: &str, value: &str) -> Span<'static> {
-    Span::raw(format!("{label}: {value}"))
-        .style(Style::default().fg(Color::White))
+    Span::raw(format!("{label}: {value}")).style(Style::default().fg(Color::White))
 }
 
 pub fn month_abbr(m: u32) -> &'static str {
     match m {
-        1 => "Jan", 2 => "Feb", 3 => "Mar", 4 => "Apr",
-        5 => "May", 6 => "Jun", 7 => "Jul", 8 => "Aug",
-        9 => "Sep", 10 => "Oct", 11 => "Nov", 12 => "Dec",
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sep",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
         _ => "???",
     }
 }

@@ -32,9 +32,25 @@ pub fn collect_project_files(root: &Path) -> Vec<String> {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             if matches!(
                 ext.to_lowercase().as_str(),
-                "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" | "svg" | "woff"
-                    | "woff2" | "ttf" | "eot" | "mp4" | "mp3" | "wav" | "zip"
-                    | "tar" | "gz" | "pdf" | "lock"
+                "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "gif"
+                    | "webp"
+                    | "ico"
+                    | "svg"
+                    | "woff"
+                    | "woff2"
+                    | "ttf"
+                    | "eot"
+                    | "mp4"
+                    | "mp3"
+                    | "wav"
+                    | "zip"
+                    | "tar"
+                    | "gz"
+                    | "pdf"
+                    | "lock"
             ) {
                 continue;
             }
@@ -97,4 +113,3 @@ pub fn build_tree_summary(root: &Path, files: &[String]) -> String {
     }
     lines.join("\n")
 }
-

@@ -121,9 +121,7 @@ pub fn detect_current_project(
 ) -> Result<(String, Option<String>)> {
     let cwd = std::env::current_dir()?;
     if let Some(root) = find_git_root(&cwd) {
-        let canonical = root
-            .canonicalize()
-            .unwrap_or_else(|_| root.clone());
+        let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
         let name = project_name_from_root(&canonical);
         let path_str = canonical.to_string_lossy().to_string();
 

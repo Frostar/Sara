@@ -90,12 +90,14 @@ impl LlmProvider for AzureOpenAiProvider {
 
         let content = resp_json["choices"][0]["message"]["content"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Unexpected Azure OpenAI response shape: {}", resp_json))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Unexpected Azure OpenAI response shape: {}", resp_json)
+            })?;
 
         let _ = std::fs::write("/tmp/tk-azure-debug.txt", format!("content: {content}\n"));
 
-        let enrichment: EnrichmentResponse =
-            serde_json::from_str(content).context("Could not parse Azure OpenAI enrichment JSON")?;
+        let enrichment: EnrichmentResponse = serde_json::from_str(content)
+            .context("Could not parse Azure OpenAI enrichment JSON")?;
         Ok(enrichment)
     }
 
@@ -143,7 +145,9 @@ impl LlmProvider for AzureOpenAiProvider {
 
         let content = resp_json["choices"][0]["message"]["content"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Unexpected Azure OpenAI response shape: {}", resp_json))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Unexpected Azure OpenAI response shape: {}", resp_json)
+            })?;
 
         serde_json::from_str(content).context("Could not parse Azure OpenAI item enrichment JSON")
     }

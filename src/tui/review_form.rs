@@ -226,12 +226,18 @@ impl<'a> FormState<'a> {
     }
 
     fn next_focus(&mut self) {
-        let idx = ALL_FIELDS.iter().position(|f| *f == self.focus).unwrap_or(0);
+        let idx = ALL_FIELDS
+            .iter()
+            .position(|f| *f == self.focus)
+            .unwrap_or(0);
         self.focus = ALL_FIELDS[(idx + 1) % ALL_FIELDS.len()];
     }
 
     fn prev_focus(&mut self) {
-        let idx = ALL_FIELDS.iter().position(|f| *f == self.focus).unwrap_or(0);
+        let idx = ALL_FIELDS
+            .iter()
+            .position(|f| *f == self.focus)
+            .unwrap_or(0);
         self.focus = ALL_FIELDS[(idx + ALL_FIELDS.len() - 1) % ALL_FIELDS.len()];
     }
 
@@ -557,7 +563,9 @@ fn run_fzf(candidates: &[String], query: &str) -> Option<Vec<String>> {
     use std::process::{Command, Stdio};
 
     let mut child = Command::new("fzf")
-        .args(["--multi", "--prompt", "files> ", "--height", "100%", "--border"])
+        .args([
+            "--multi", "--prompt", "files> ", "--height", "100%", "--border",
+        ])
         .arg("--query")
         .arg(query)
         .stdin(Stdio::piped())
@@ -601,7 +609,11 @@ fn render(f: &mut Frame, state: &mut FormState) {
     let (status_area, fields_area) = if state.ctx.llm_status.is_some() {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
             .split(inner);
         (Some(chunks[0]), chunks[1])
     } else {
@@ -626,8 +638,7 @@ fn render(f: &mut Frame, state: &mut FormState) {
             format!("⚠ LLM: {msg}")
         };
         f.render_widget(
-            Paragraph::new(short)
-                .style(Style::default().fg(Color::Yellow)),
+            Paragraph::new(short).style(Style::default().fg(Color::Yellow)),
             sa,
         );
     }
@@ -749,7 +760,9 @@ fn render_fields(f: &mut Frame, state: &mut FormState, area: Rect) {
                     let style = if state.selected_deps[i] {
                         Style::default().fg(Color::Green)
                     } else if suggested {
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC)
                     } else {
                         Style::default()
                     };
@@ -757,7 +770,9 @@ fn render_fields(f: &mut Frame, state: &mut FormState, area: Rect) {
                 })
                 .collect();
             let list = List::new(items).highlight_style(
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
             );
             f.render_stateful_widget(list, inner, &mut state.dep_state);
         }
@@ -822,7 +837,9 @@ fn render_fields(f: &mut Frame, state: &mut FormState, area: Rect) {
                     let style = if r.selected {
                         Style::default().fg(Color::Green)
                     } else if r.suggested {
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC)
                     } else {
                         Style::default()
                     };
@@ -830,7 +847,9 @@ fn render_fields(f: &mut Frame, state: &mut FormState, area: Rect) {
                 })
                 .collect();
             let list = List::new(items).highlight_style(
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
             );
             f.render_stateful_widget(list, list_area, &mut state.file_state);
         }
@@ -845,7 +864,10 @@ fn render_fields(f: &mut Frame, state: &mut FormState, area: Rect) {
             .split(row);
 
         let submit_style = if state.focus == Focus::Submit {
-            Style::default().bg(Color::Green).fg(Color::Black).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(Color::Green)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
         } else if state.can_submit() {
             Style::default().fg(Color::Green)
         } else {
@@ -859,7 +881,10 @@ fn render_fields(f: &mut Frame, state: &mut FormState, area: Rect) {
         );
 
         let cancel_style = if state.focus == Focus::Cancel {
-            Style::default().bg(Color::Red).fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(Color::Red)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Red)
         };
@@ -885,7 +910,11 @@ fn field_block(title: &str, focused: bool) -> Block<'_> {
         Block::default()
             .borders(Borders::ALL)
             .title(format!(" {title} "))
-            .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .border_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
     } else {
         Block::default()
             .borders(Borders::ALL)
@@ -986,8 +1015,16 @@ mod tests {
         tab_to(&mut state, Focus::Dependencies);
 
         state.handle_key(key(KeyCode::Char(' ')));
-        assert_eq!(state.selected_deps, vec![true], "space should toggle dep on");
-        assert_eq!(state.focus, Focus::Dependencies, "toggle must not move focus");
+        assert_eq!(
+            state.selected_deps,
+            vec![true],
+            "space should toggle dep on"
+        );
+        assert_eq!(
+            state.focus,
+            Focus::Dependencies,
+            "toggle must not move focus"
+        );
 
         // Now navigation must still work.
         state.handle_key(key(KeyCode::Tab));
@@ -1206,4 +1243,3 @@ mod tests {
         assert_eq!(state.focus, Focus::Files);
     }
 }
-

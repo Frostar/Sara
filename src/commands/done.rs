@@ -44,10 +44,7 @@ pub fn run(conn: &Connection, cfg: &Config, id_or_uuid: &str, force: bool) -> Re
     // Repack display IDs
     db::repack_ids(conn)?;
 
-    println!(
-        "Done: [{}] {}",
-        task.project, task.description
-    );
+    println!("Done: [{}] {}", task.project, task.description);
 
     // Refresh urgency for tasks that were blocking on this one
     let was_blocking = db::get_blocking(conn, &task.uuid)?;

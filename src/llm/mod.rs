@@ -104,9 +104,7 @@ pub fn system_prompt(req: &EnrichmentRequest) -> String {
             .map(|(id, desc)| format!("  {id}: {desc}"))
             .collect::<Vec<_>>()
             .join("\n");
-        parts.push(format!(
-            "Existing pending tasks (id: description):\n{list}"
-        ));
+        parts.push(format!("Existing pending tasks (id: description):\n{list}"));
     }
     parts.join("\n\n")
 }
@@ -118,7 +116,9 @@ pub fn item_system_prompt(req: &ItemEnrichmentRequest) -> String {
         format!("Content type: {}", req.kind),
     ];
     if let Some(ref profile) = req.profile_context {
-        parts.push(format!("User profile (adapt to their patterns):\n{profile}"));
+        parts.push(format!(
+            "User profile (adapt to their patterns):\n{profile}"
+        ));
     }
     if let Some(ref project) = req.current_project {
         parts.push(format!(
@@ -167,7 +167,8 @@ pub fn brief_system_prompt(profile_context: Option<&str>) -> String {
          Lead with what matters most (due today, current project). \
          Don't list raw urgency scores or numbered task dumps. \
          Don't say \"I'd be happy to help\" or other chatbot filler. \
-         Don't invent facts not in the context.".to_string(),
+         Don't invent facts not in the context."
+            .to_string(),
     ];
     if let Some(profile) = profile_context {
         parts.push(format!("Background on the user:\n{profile}"));

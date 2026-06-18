@@ -17,12 +17,7 @@ const CYAN: &str = "\x1b[36m";
 const GRAY: &str = "\x1b[90m";
 const MAGENTA: &str = "\x1b[35m";
 
-pub fn run(
-    conn: &Connection,
-    cfg: &Config,
-    all: bool,
-    project_filter: Option<&str>,
-) -> Result<()> {
+pub fn run(conn: &Connection, cfg: &Config, all: bool, project_filter: Option<&str>) -> Result<()> {
     let no_color = std::env::var("NO_COLOR").is_ok();
 
     let filter = if all {
@@ -76,7 +71,10 @@ pub fn run(
     }
 
     for task in &tasks {
-        let id_str = task.id.map(|i| i.to_string()).unwrap_or_else(|| "-".to_string());
+        let id_str = task
+            .id
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "-".to_string());
         let pri_str = task
             .priority
             .as_ref()
@@ -245,10 +243,7 @@ fn color_due(task: &Task, due_str: &str, no_color: bool) -> String {
         return format!("{due_str:<12}");
     }
     let now = Utc::now();
-    let days = task
-        .due
-        .map(|d| (d - now).num_days())
-        .unwrap_or(999);
+    let days = task.due.map(|d| (d - now).num_days()).unwrap_or(999);
     let color = if days < 0 {
         RED
     } else if days <= 1 {

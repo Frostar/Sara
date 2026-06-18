@@ -94,7 +94,10 @@ pub fn run(
         let name = name_override
             .map(str::to_string)
             .unwrap_or_else(|| cfg.default_project.clone());
-        println!("Note: not inside a git repo. Registering project '{}' without a path.", name);
+        println!(
+            "Note: not inside a git repo. Registering project '{}' without a path.",
+            name
+        );
         (name, None)
     };
 
@@ -135,7 +138,11 @@ pub fn run(
     let project = Project {
         name: project_name.clone(),
         path: project_path,
-        goal: if goal.is_empty() { None } else { Some(goal.clone()) },
+        goal: if goal.is_empty() {
+            None
+        } else {
+            Some(goal.clone())
+        },
         stack: Some(detected_stack.clone()),
         conventions: None,
         notes: if notes.is_empty() { None } else { Some(notes) },
@@ -202,7 +209,9 @@ fn seed_tasks(conn: &Connection, cfg: &Config, project: &Project) -> Result<()> 
                 // Parse newline-separated tasks from the suggestion
                 for (i, line) in cleaned.lines().enumerate() {
                     let line = line.trim().trim_start_matches(|c: char| !c.is_alphabetic());
-                    if line.is_empty() { continue; }
+                    if line.is_empty() {
+                        continue;
+                    }
                     println!("  {}. {}", i + 1, line);
                 }
                 print!("Accept and create these tasks? [y/N]: ");
@@ -212,8 +221,11 @@ fn seed_tasks(conn: &Connection, cfg: &Config, project: &Project) -> Result<()> 
                 if input.trim().eq_ignore_ascii_case("y") {
                     for line in cleaned.lines() {
                         let desc = line.trim().trim_start_matches(|c: char| !c.is_alphabetic());
-                        if desc.is_empty() { continue; }
-                        let mut task = crate::model::Task::new(desc.to_string(), project.name.clone());
+                        if desc.is_empty() {
+                            continue;
+                        }
+                        let mut task =
+                            crate::model::Task::new(desc.to_string(), project.name.clone());
                         crate::db::insert_task(conn, &mut task)?;
                     }
                     println!("✔ Tasks created.");

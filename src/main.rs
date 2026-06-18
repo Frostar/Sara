@@ -28,8 +28,19 @@ fn run() -> Result<()> {
         args.insert(1, "info".to_string());
     } else if args.len() >= 3 && args[1].parse::<i64>().is_ok() {
         const ACTIONS: &[&str] = &[
-            "start", "stop", "done", "delete", "modify", "info", "dep", "annotate", "comment",
-            "attach", "pr", "link", "addbranch",
+            "start",
+            "stop",
+            "done",
+            "delete",
+            "modify",
+            "info",
+            "dep",
+            "annotate",
+            "comment",
+            "attach",
+            "pr",
+            "link",
+            "addbranch",
         ];
         if ACTIONS.contains(&args[2].as_str()) {
             let id = args.remove(1);
@@ -54,15 +65,13 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Project { action } => match action {
-            ProjectAction::Init { name, goal, yes, no_llm } => {
-                commands::init::run(
-                    &conn,
-                    &cfg,
-                    name.as_deref(),
-                    goal.as_deref(),
-                    yes,
-                    no_llm,
-                )?;
+            ProjectAction::Init {
+                name,
+                goal,
+                yes,
+                no_llm,
+            } => {
+                commands::init::run(&conn, &cfg, name.as_deref(), goal.as_deref(), yes, no_llm)?;
             }
         },
 

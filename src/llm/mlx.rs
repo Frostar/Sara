@@ -59,24 +59,21 @@ impl LlmProvider for MlxProvider {
 
         let url = format!("{}/v1/chat/completions", self.base_url);
         let _ = std::fs::write("/tmp/tk-mlx-debug.txt", format!("POST {url}\n"));
-        let resp = client
-            .post(&url)
-            .json(&body)
-            .send()
-            .context("mlx_lm.server request failed — is it running? (mlx_lm.server --model <model>)")?;
+        let resp = client.post(&url).json(&body).send().context(
+            "mlx_lm.server request failed — is it running? (mlx_lm.server --model <model>)",
+        )?;
 
         let status = resp.status();
-        let _ = std::fs::write("/tmp/tk-mlx-debug.txt", format!("POST {url}\nstatus: {status}\n"));
+        let _ = std::fs::write(
+            "/tmp/tk-mlx-debug.txt",
+            format!("POST {url}\nstatus: {status}\n"),
+        );
         let resp_json: serde_json::Value = resp
             .json()
             .context("mlx_lm.server response was not valid JSON")?;
 
         if !status.is_success() {
-            anyhow::bail!(
-                "mlx_lm.server returned {}: {}",
-                status,
-                resp_json
-            );
+            anyhow::bail!("mlx_lm.server returned {}: {}", status, resp_json);
         }
 
         let content = resp_json["choices"][0]["message"]["content"]
@@ -84,7 +81,10 @@ impl LlmProvider for MlxProvider {
             .ok_or_else(|| anyhow::anyhow!("Unexpected mlx response shape: {}", resp_json))?;
 
         eprintln!("[mlx] raw content: {content}");
-        let _ = std::fs::write("/tmp/tk-mlx-debug.txt", format!("POST {url}\nstatus: {status}\ncontent: {content}\n"));
+        let _ = std::fs::write(
+            "/tmp/tk-mlx-debug.txt",
+            format!("POST {url}\nstatus: {status}\ncontent: {content}\n"),
+        );
 
         // Strip markdown code fences if the model wrapped its output
         let content = content.trim();

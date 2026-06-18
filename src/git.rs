@@ -13,7 +13,14 @@ fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        anyhow::bail!("{}", if stderr.is_empty() { "git command failed".to_string() } else { stderr })
+        anyhow::bail!(
+            "{}",
+            if stderr.is_empty() {
+                "git command failed".to_string()
+            } else {
+                stderr
+            }
+        )
     }
 }
 
@@ -40,7 +47,10 @@ pub fn current_branch(repo: &Path) -> Option<String> {
 /// Prefers the default remote branch, then falls back to main/master.
 pub fn default_base(repo: &Path) -> String {
     // Try remote HEAD symbolic ref
-    if let Ok(out) = git_output(repo, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]) {
+    if let Ok(out) = git_output(
+        repo,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    ) {
         if !out.is_empty() {
             return out; // e.g. "origin/main"
         }
