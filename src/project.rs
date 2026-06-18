@@ -63,8 +63,7 @@ pub fn parse_add_tokens(args: &[String]) -> ParsedTokens {
     let mut remaining: Vec<&str> = cleaned;
 
     // Strip leading tokens
-    loop {
-        let Some(&tok) = remaining.first() else { break };
+    while let Some(&tok) = remaining.first() {
         if let Some(stripped) = tok.strip_prefix("project:") {
             result.project = Some(stripped.to_string());
             remaining.remove(0);
@@ -83,8 +82,7 @@ pub fn parse_add_tokens(args: &[String]) -> ParsedTokens {
     }
 
     // Strip trailing tokens
-    loop {
-        let Some(&tok) = remaining.last() else { break };
+    while let Some(&tok) = remaining.last() {
         if let Some(stripped) = tok.strip_prefix("project:") {
             if result.project.is_none() {
                 result.project = Some(stripped.to_string());
