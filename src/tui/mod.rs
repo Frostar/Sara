@@ -1,3 +1,4 @@
+pub mod fzf;
 pub mod review_form;
 
 use anyhow::Result;

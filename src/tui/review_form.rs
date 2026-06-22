@@ -11,6 +11,7 @@ use ratatui::{
 use tui_textarea::TextArea;
 
 use crate::model::Priority;
+use crate::tui::fzf;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -500,7 +501,7 @@ pub fn run_form<B: Backend>(
     ctx: FormContext,
 ) -> Result<Option<FormInput>> {
     let mut state = FormState::new(ctx);
-    state.fzf_available = fzf_available();
+    state.fzf_available = fzf::fzf_available();
 
     loop {
         terminal.draw(|f| render(f, &mut state))?;
@@ -524,7 +525,7 @@ pub fn run_form<B: Backend>(
             let candidates = state.fzf_candidates();
             // Hand the terminal back to fzf, then reclaim and force a redraw.
             crate::tui::suspend()?;
-            let picked = run_fzf(&candidates, &state.file_filter);
+            let picked = fzf::run_fzf(&candidates, &state.file_filter);
             crate::tui::resume()?;
             terminal.clear()?;
             if let Some(paths) = picked {
@@ -543,53 +544,6 @@ pub fn run_form<B: Backend>(
             return Ok(None);
         }
     }
-}
-
-/// Whether the `fzf` binary is on PATH.
-fn fzf_available() -> bool {
-    std::process::Command::new("fzf")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Run fzf as a multi-select picker over `candidates`, pre-filling `query`.
-/// Returns the chosen paths, or None if fzf was cancelled or failed.
-fn run_fzf(candidates: &[String], query: &str) -> Option<Vec<String>> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new("fzf")
-        .args([
-            "--multi", "--prompt", "files> ", "--height", "100%", "--border",
-        ])
-        .arg("--query")
-        .arg(query)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        for c in candidates {
-            let _ = writeln!(stdin, "{c}");
-        }
-    }
-
-    let output = child.wait_with_output().ok()?;
-    // fzf exits 130 when the user aborts (Esc/Ctrl-C); keep selection unchanged.
-    if !output.status.success() {
-        return None;
-    }
-    let selected: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    Some(selected)
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
