@@ -510,17 +510,34 @@ The `date_dialect` config setting (`uk` vs `us`) affects ambiguous phrasing.
 
 ## Shell completions
 
-```bash
-# Zsh
-sara completions zsh > ~/.zsh/completions/_sara
-# ensure in ~/.zshrc:  fpath=(~/.zsh/completions $fpath) && autoload -U compinit && compinit
+Sara ships **dynamic** completions: once registered, `<TAB>` completes real
+pending task ids — annotated with their descriptions — for commands like
+`sara done` / `info` / `start`, and known project names for `--project` / `-p`.
 
-# Bash
-sara completions bash >> ~/.bashrc
+Register by having your shell evaluate `COMPLETE=<shell> sara` at startup
+(no `fpath`/`compinit` setup needed). Re-run on upgrade so the generated shell
+glue stays in sync with the binary:
+
+```bash
+# Bash — ~/.bashrc
+echo 'source <(COMPLETE=bash sara)' >> ~/.bashrc
+
+# Zsh — ~/.zshrc
+echo 'source <(COMPLETE=zsh sara)' >> ~/.zshrc
 
 # Fish
-sara completions fish > ~/.config/fish/completions/sara.fish
+echo 'COMPLETE=fish sara | source' >> ~/.config/fish/completions/sara.fish
+
+# Elvish
+echo 'eval (E:COMPLETE=elvish sara | slurp)' >> ~/.elvish/rc.elv
 ```
+
+Restart your shell (or `source` the file) afterwards. To disable, set
+`COMPLETE=` or `COMPLETE=0`.
+
+> Prefer a **static** completion script (command/flag structure only — no
+> dynamic task-id/project values)? `sara completions <shell>` still emits one,
+> e.g. `sara completions zsh > ~/.zsh/completions/_sara`.
 
 ---
 

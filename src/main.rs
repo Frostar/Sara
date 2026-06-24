@@ -3,6 +3,7 @@
 
 mod cli;
 mod commands;
+mod completion;
 mod config;
 mod dates;
 mod db;
@@ -23,6 +24,11 @@ use std::process::ExitCode;
 use cli::{Cli, Command, DepAction, ProjectAction};
 
 fn run() -> Result<()> {
+    // Dynamic shell completion: when invoked as `COMPLETE=<shell> sara …`
+    // (the registration installed via `source <(COMPLETE=zsh sara)`), emit
+    // completions and exit. A no-op during normal invocation.
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
+
     // Taskwarrior-style shorthands:
     //   `sara <id>`          -> `sara info <id>`
     //   `sara <id> <action>` -> `sara <action> <id>`
