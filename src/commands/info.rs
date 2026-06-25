@@ -617,21 +617,18 @@ fn feedback_for_focus<'a>(
     d: &'a Detail,
     focus: &Option<Focusable>,
 ) -> Vec<&'a crate::db::Annotation> {
-    match focus {
-        // When the cursor is ON a comment, r/x act on that comment directly.
-        Some(Focusable::Comment(i)) => {
-            let comments: Vec<&crate::db::Annotation> = d
-                .annotations
-                .iter()
-                .filter(|a| a.kind == "comment")
-                .collect();
-            return comments
-                .get(*i)
-                .copied()
-                .map(|a| vec![a])
-                .unwrap_or_default();
-        }
-        _ => {}
+    // When the cursor is ON a comment, r/x act on that comment directly.
+    if let Some(Focusable::Comment(i)) = focus {
+        let comments: Vec<&crate::db::Annotation> = d
+            .annotations
+            .iter()
+            .filter(|a| a.kind == "comment")
+            .collect();
+        return comments
+            .get(*i)
+            .copied()
+            .map(|a| vec![a])
+            .unwrap_or_default();
     }
     let (tk, tid) = comment_target(d, focus);
     let mut v: Vec<&crate::db::Annotation> = d
