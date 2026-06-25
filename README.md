@@ -9,10 +9,8 @@ relevant files.
 Task data lives in a single SQLite database in your home directory — **nothing
 is ever written into your repositories.**
 
-> **Migrating from tk:** on first run, Sara automatically imports an existing
-> `tk` config and task database, so you can switch over without losing anything.
 
-```text
+```bash
      ID  PRI   PROJECT      DUE           URG  DEPS             DESCRIPTION
 ──────────────────────────────────────────────────────────────────────────────
 ⛓    1  H     web-app      2026-07-01   28.0  blocks 1 task    Design the auth flow
