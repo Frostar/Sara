@@ -1,4 +1,7 @@
 use clap::{Parser, Subcommand};
+use clap_complete::engine::ArgValueCandidates;
+
+use crate::completion::{projects, task_ids};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -39,7 +42,7 @@ pub enum Command {
     /// Nuke a project: delete all its tasks and profile (run `sara init` to recreate)
     Reset {
         /// Project to reset (defaults to the current project)
-        #[arg(long, short)]
+        #[arg(long, short, add = ArgValueCandidates::new(projects))]
         project: Option<String>,
         /// Skip the confirmation prompt
         #[arg(short, long)]
@@ -51,7 +54,7 @@ pub enum Command {
         #[arg(trailing_var_arg = true)]
         words: Vec<String>,
         /// Override project
-        #[arg(long, short)]
+        #[arg(long, short, add = ArgValueCandidates::new(projects))]
         project: Option<String>,
         /// Override priority (H/M/L)
         #[arg(long)]
@@ -73,6 +76,7 @@ pub enum Command {
     /// Show full details of a task
     Info {
         /// Task id or uuid prefix
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
         /// Emit the full guide as JSON (for agents/scripts)
         #[arg(long)]
@@ -83,6 +87,7 @@ pub enum Command {
     #[command(visible_alias = "comment")]
     Annotate {
         /// Task id or uuid prefix
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
         /// The comment / note text or URL
         #[arg(trailing_var_arg = true, required = true)]
@@ -112,6 +117,7 @@ pub enum Command {
     #[command(visible_alias = "pr")]
     Attach {
         /// Task id or uuid prefix
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
         /// File path (relative to project) or URL
         path: String,
@@ -132,6 +138,7 @@ pub enum Command {
     /// Add a link (e.g. a GitHub PR) to a task
     Link {
         /// Task id or uuid prefix
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
         /// The URL to link
         url: String,
@@ -152,7 +159,7 @@ pub enum Command {
         #[arg(short, long)]
         all: bool,
         /// Filter by project name
-        #[arg(long)]
+        #[arg(long, short, add = ArgValueCandidates::new(projects))]
         project: Option<String>,
         /// Emit the list as JSON
         #[arg(long)]
@@ -162,18 +169,21 @@ pub enum Command {
     /// Start working on a task (begins time tracking, marks it active)
     Start {
         /// Task id or uuid prefix
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
     },
 
     /// Stop working on a task (accumulates time spent)
     Stop {
         /// Task id or uuid prefix
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
     },
 
     /// Mark a task as done
     Done {
         /// Task id or uuid prefix
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
         /// Force-complete even if blocked
         #[arg(long)]
@@ -183,6 +193,7 @@ pub enum Command {
     /// Modify a task (opens the review form pre-filled)
     Modify {
         /// Task id or uuid prefix
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
         /// Skip LLM re-enrichment
         #[arg(long)]
@@ -201,6 +212,7 @@ pub enum Command {
     /// Delete a task (soft-delete)
     Delete {
         /// Task id or uuid prefix
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
         /// Skip confirmation
         #[arg(short, long)]
@@ -210,6 +222,7 @@ pub enum Command {
     /// Manage task dependencies
     Dep {
         /// Task id or uuid prefix
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
         #[command(subcommand)]
         action: DepAction,
@@ -218,6 +231,7 @@ pub enum Command {
     /// Tie the currently active git branch to a task (snapshot on sara stop)
     Addbranch {
         /// Task id or uuid prefix
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
         /// Remove the tied branch
         #[arg(long)]
@@ -237,6 +251,7 @@ pub enum Command {
     #[clap(name = "check")]
     Check {
         /// Task ID
+        #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
         /// Step / criterion text
         text: String,
@@ -364,7 +379,7 @@ pub enum Command {
     #[clap(name = "activity", alias = "heat")]
     Activity {
         /// Limit to a specific project (defaults to current git project)
-        #[arg(long, short)]
+        #[arg(long, short, add = ArgValueCandidates::new(projects))]
         project: Option<String>,
         /// Show activity across all projects
         #[arg(long, short)]
@@ -491,7 +506,7 @@ pub enum DepAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn cli_name_is_sara() {
@@ -507,6 +522,39 @@ mod tests {
                 cmd.find_subcommand(name).is_some(),
                 "missing subcommand: {name}"
             );
+        }
+    }
+
+    #[test]
+    fn list_accepts_short_and_long_project_flag() {
+        for args in [
+            ["sara", "list", "-p", "web"],
+            ["sara", "list", "--project", "web"],
+        ] {
+            let cli = Cli::try_parse_from(args).expect("list should parse a project flag");
+            match cli.command {
+                Command::List { project, .. } => {
+                    assert_eq!(project.as_deref(), Some("web"), "{args:?}");
+                }
+                other => panic!("expected List, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn project_filter_short_flag_is_consistent_across_commands() {
+        // `-p` must mean `--project` on every command exposing a project filter.
+        assert!(Cli::try_parse_from(["sara", "list", "-p", "x"]).is_ok());
+        assert!(Cli::try_parse_from(["sara", "reset", "-p", "x"]).is_ok());
+        assert!(Cli::try_parse_from(["sara", "activity", "-p", "x"]).is_ok());
+        // `add` takes `-p` before the trailing description.
+        let cli = Cli::try_parse_from(["sara", "add", "-p", "x", "do", "thing"]).unwrap();
+        match cli.command {
+            Command::Add { project, words, .. } => {
+                assert_eq!(project.as_deref(), Some("x"));
+                assert_eq!(words, vec!["do".to_string(), "thing".to_string()]);
+            }
+            other => panic!("expected Add, got {other:?}"),
         }
     }
 }

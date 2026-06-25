@@ -1537,6 +1537,19 @@ pub fn get_project(conn: &Connection, name: &str) -> Result<Option<Project>> {
     Ok(rows.next().transpose()?)
 }
 
+/// All known project names — the union of registered profiles and any project
+/// referenced by a task — sorted. Used for shell-completion candidates.
+pub fn project_names(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT project FROM tasks
+         UNION
+         SELECT name FROM projects
+         ORDER BY 1",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// Look up a project profile by its (canonical) path. When several profiles
 /// share a path — e.g. stale rows from before path resolution was fixed — the
 /// most-recently-seen one wins.
@@ -2846,6 +2859,21 @@ mod tests {
             .collect();
         assert_eq!(manual.len(), 2);
         assert_eq!(suggested, vec!["src/llm/mod.rs".to_string()]);
+    }
+
+    #[test]
+    fn project_names_unions_tasks_and_profiles_sorted() {
+        let conn = mem();
+        let mut t = Task::new("x".into(), "alpha".into());
+        insert_task(&conn, &mut t).unwrap();
+        upsert_project_seen(&conn, "beta", Some("/p/beta")).unwrap();
+
+        let names = project_names(&conn).unwrap();
+        assert!(names.contains(&"alpha".to_string()), "{names:?}");
+        assert!(names.contains(&"beta".to_string()), "{names:?}");
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "project_names should be sorted");
     }
 
     #[test]
