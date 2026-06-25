@@ -2090,11 +2090,7 @@ fn render_chain_panel(f: &mut Frame, area: ratatui::layout::Rect, d: &Detail) {
     // Progress bar across the panel width.
     let bar_w = inner.width.saturating_sub(2) as usize;
     if bar_w > 0 {
-        let filled = if total > 0 {
-            (done * bar_w + total / 2) / total
-        } else {
-            0
-        };
+        let filled = (done * bar_w + total / 2).checked_div(total).unwrap_or(0);
         let mut spans = vec![Span::raw(" ")];
         spans.push(Span::styled(
             "█".repeat(filled),
