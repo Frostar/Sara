@@ -3107,6 +3107,93 @@ pub fn set_github_provenance(
     set_meta_json(conn, task_uuid, &json)
 }
 
+// ── GitHub issue comments ─────────────────────────────────────────────────────
+
+/// Annotation `kind` used for comments imported from GitHub issues.
+pub const NOTE_KIND_GITHUB_COMMENT: &str = "github_comment";
+
+/// Insert a GitHub issue comment as an annotation if one with the same
+/// stable identity does not already exist.
+///
+/// Deduplication key: `target_kind = NOTE_KIND_GITHUB_COMMENT` AND
+/// `target_id = <comment_id>`.  The annotation is stored with the comment's
+/// `created_at` as its `entry` timestamp so ordering is chronologically
+/// faithful.  Returns `true` when a new annotation was inserted.
+pub fn upsert_github_comment_annotation(
+    conn: &Connection,
+    task_uuid: &Uuid,
+    comment: &crate::model::GithubComment,
+) -> Result<bool> {
+    let id_str = comment.comment_id.to_string();
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(1) FROM annotations
+             WHERE task_uuid=?1 AND target_kind=?2 AND target_id=?3",
+            params![task_uuid.to_string(), NOTE_KIND_GITHUB_COMMENT, &id_str],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)?;
+    if exists {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT INTO annotations
+           (task_uuid, text, entry, kind, author, target_kind, target_id, status, request_revision)
+         VALUES (?1,?2,?3,'comment',?4,?5,?6,'open',0)",
+        params![
+            task_uuid.to_string(),
+            comment.body,
+            dt_to_str(&comment.created_at),
+            comment.author,
+            NOTE_KIND_GITHUB_COMMENT,
+            id_str,
+        ],
+    )?;
+    Ok(true)
+}
+
+/// Replace the `"github_comments"` array inside a task's `meta_json`.
+/// Merges with any existing meta_json keys so other entries are preserved.
+/// Stores the full comment record (including `url` and `updated_at`) for
+/// complete round-trip fidelity.
+pub fn set_github_comments(
+    conn: &Connection,
+    task_uuid: &Uuid,
+    comments: &[crate::model::GithubComment],
+) -> Result<()> {
+    let fields = get_guide_fields(conn, task_uuid)?;
+    let mut obj: serde_json::Map<String, serde_json::Value> = fields
+        .meta_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    obj.insert(
+        "github_comments".to_string(),
+        serde_json::to_value(comments).unwrap_or(serde_json::Value::Array(vec![])),
+    );
+    let json = serde_json::to_string(&obj)?;
+    set_meta_json(conn, task_uuid, &json)
+}
+
+/// Read the `"github_comments"` array from a task's `meta_json`.
+pub fn get_github_comments(
+    conn: &Connection,
+    task_uuid: &Uuid,
+) -> Result<Vec<crate::model::GithubComment>> {
+    let fields = get_guide_fields(conn, task_uuid)?;
+    let Some(raw) = fields.meta_json else {
+        return Ok(Vec::new());
+    };
+    let obj: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+    let comments = obj
+        .get("github_comments")
+        .and_then(|v| {
+            serde_json::from_value::<Vec<crate::model::GithubComment>>(v.clone()).ok()
+        })
+        .unwrap_or_default();
+    Ok(comments)
+}
+
 /// Transitive set of tasks `task_uuid` depends on (its blockers, recursively),
 /// returned blockers-first so a briefing reads in execution order.
 pub fn dependency_closure(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<Uuid>> {
@@ -3130,7 +3217,7 @@ pub fn dependency_closure(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<Uui
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use chrono::TimeZone as _;
     fn mem() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
@@ -4141,5 +4228,178 @@ mod tests {
             .unwrap()
             .expect("match by node id");
         assert_eq!(by_node, task.uuid);
+    }
+
+    // ── GitHub issue comments ────────────────────────────────────────────────
+
+    fn make_gh_comment(id: i64, author: &str, body: &str) -> crate::model::GithubComment {
+        crate::model::GithubComment {
+            comment_id: id,
+            author: author.to_string(),
+            body: body.to_string(),
+            url: format!("https://github.com/a/b/issues/1#issuecomment-{id}"),
+            created_at: Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2026, 6, 2, 0, 0, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn github_comment_annotation_is_inserted_once() {
+        let conn = mem();
+        let task = seed_task(&conn);
+        let c = make_gh_comment(42, "alice", "Looks good");
+
+        let first = upsert_github_comment_annotation(&conn, &task.uuid, &c).unwrap();
+        assert!(first, "first insert should return true");
+
+        let second = upsert_github_comment_annotation(&conn, &task.uuid, &c).unwrap();
+        assert!(!second, "duplicate insert should return false");
+
+        let anns = get_annotations(&conn, &task.uuid).unwrap();
+        assert_eq!(anns.len(), 1, "only one annotation must exist");
+        assert_eq!(anns[0].author, "alice");
+        assert_eq!(anns[0].text, "Looks good");
+        assert_eq!(anns[0].target_kind.as_deref(), Some(NOTE_KIND_GITHUB_COMMENT));
+        assert_eq!(anns[0].target_id.as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn github_comment_kind_is_comment_for_info_visibility() {
+        // Comments must use kind="comment" so sara info shows them.
+        let conn = mem();
+        let task = seed_task(&conn);
+        let c = make_gh_comment(7, "bob", "Fix it");
+        upsert_github_comment_annotation(&conn, &task.uuid, &c).unwrap();
+
+        let anns = get_annotations(&conn, &task.uuid).unwrap();
+        assert_eq!(anns[0].kind, "comment");
+    }
+
+    #[test]
+    fn github_comment_annotation_uses_github_created_at_as_entry() {
+        use chrono::TimeZone;
+        let conn = mem();
+        let task = seed_task(&conn);
+        let created = Utc.with_ymd_and_hms(2025, 3, 15, 8, 0, 0).unwrap();
+        let mut c = make_gh_comment(10, "carol", "hello");
+        c.created_at = created;
+        upsert_github_comment_annotation(&conn, &task.uuid, &c).unwrap();
+
+        let anns = get_annotations(&conn, &task.uuid).unwrap();
+        assert_eq!(
+            anns[0].entry.timestamp(),
+            created.timestamp(),
+            "entry must equal the comment's created_at"
+        );
+    }
+
+    #[test]
+    fn github_comments_round_trip_through_meta_json() {
+        let conn = mem();
+        let task = seed_task(&conn);
+
+        let comments = vec![
+            make_gh_comment(1, "alice", "First comment"),
+            make_gh_comment(2, "bob", "Second comment"),
+        ];
+        set_github_comments(&conn, &task.uuid, &comments).unwrap();
+
+        let loaded = get_github_comments(&conn, &task.uuid).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].comment_id, 1);
+        assert_eq!(loaded[0].author, "alice");
+        assert_eq!(loaded[0].body, "First comment");
+        assert_eq!(
+            loaded[0].url,
+            "https://github.com/a/b/issues/1#issuecomment-1"
+        );
+        assert_eq!(loaded[1].comment_id, 2);
+    }
+
+    #[test]
+    fn github_comments_meta_json_preserves_other_keys() {
+        let conn = mem();
+        let task = seed_task(&conn);
+
+        set_meta_json(&conn, &task.uuid, r#"{"other_key":"keep_me"}"#).unwrap();
+        set_github_comments(&conn, &task.uuid, &[make_gh_comment(5, "dave", "hi")]).unwrap();
+
+        let raw = get_guide_fields(&conn, &task.uuid)
+            .unwrap()
+            .meta_json
+            .unwrap();
+        let obj: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(obj["other_key"], "keep_me", "existing keys must be preserved");
+        assert_eq!(obj["github_comments"][0]["comment_id"], 5);
+    }
+
+    #[test]
+    fn repeated_set_github_comments_replaces_array() {
+        let conn = mem();
+        let task = seed_task(&conn);
+
+        set_github_comments(&conn, &task.uuid, &[make_gh_comment(1, "a", "old")]).unwrap();
+        set_github_comments(
+            &conn,
+            &task.uuid,
+            &[
+                make_gh_comment(1, "a", "old"),
+                make_gh_comment(2, "b", "new"),
+            ],
+        )
+        .unwrap();
+
+        let loaded = get_github_comments(&conn, &task.uuid).unwrap();
+        assert_eq!(loaded.len(), 2, "array is replaced with the latest set");
+    }
+
+    #[test]
+    fn upsert_github_comment_idempotent_across_multiple_calls() {
+        // Simulates two consecutive sync runs with the same comment list.
+        let conn = mem();
+        let task = seed_task(&conn);
+        let comments = vec![
+            make_gh_comment(100, "alice", "LGTM"),
+            make_gh_comment(101, "bob", "Please clarify"),
+        ];
+
+        // First sync
+        for c in &comments {
+            upsert_github_comment_annotation(&conn, &task.uuid, c).unwrap();
+        }
+        set_github_comments(&conn, &task.uuid, &comments).unwrap();
+
+        // Second sync (same data)
+        for c in &comments {
+            let inserted = upsert_github_comment_annotation(&conn, &task.uuid, c).unwrap();
+            assert!(!inserted, "second sync must not re-insert comment {}", c.comment_id);
+        }
+        set_github_comments(&conn, &task.uuid, &comments).unwrap();
+
+        // Exactly two annotations, no duplicates.
+        let anns = get_annotations(&conn, &task.uuid).unwrap();
+        assert_eq!(anns.len(), 2, "no duplicate annotations after repeated sync");
+
+        // Meta JSON also holds exactly two entries.
+        let meta = get_github_comments(&conn, &task.uuid).unwrap();
+        assert_eq!(meta.len(), 2);
+    }
+
+    #[test]
+    fn github_comment_metadata_preserves_url_and_updated_at() {
+        let conn = mem();
+        let task = seed_task(&conn);
+        let mut c = make_gh_comment(77, "eve", "test");
+        c.url = "https://github.com/org/repo/issues/3#issuecomment-77".to_string();
+        c.updated_at = Utc.with_ymd_and_hms(2026, 7, 1, 12, 0, 0).unwrap();
+
+        set_github_comments(&conn, &task.uuid, &[c.clone()]).unwrap();
+        let loaded = get_github_comments(&conn, &task.uuid).unwrap();
+
+        assert_eq!(
+            loaded[0].url,
+            "https://github.com/org/repo/issues/3#issuecomment-77"
+        );
+        assert_eq!(loaded[0].updated_at, c.updated_at);
     }
 }
