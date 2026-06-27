@@ -48,17 +48,20 @@ struct GhComment {
     user: GhUser,
 }
 
-/// Resolve the GitHub token from the active shell environment.
+/// Resolve a GitHub token for the sync API calls.
 ///
-/// `GH_TOKEN` wins over `GITHUB_TOKEN`. The error explains how to export a
-/// token before launching Sara.
+/// Precedence: `GH_TOKEN` env > `GITHUB_TOKEN` env > the gh CLI's stored token
+/// (`gh auth token`). The last step means a user who has run `gh auth login`
+/// does not have to export a token by hand — and `gh` is already a hard
+/// dependency of sync. The error explains both paths when nothing is found.
 pub fn resolve_github_token() -> Result<String> {
-    resolve_github_token_from(|key| std::env::var(key).ok())
+    resolve_github_token_from(|key| std::env::var(key).ok(), gh_auth_token)
 }
 
-fn resolve_github_token_from<F>(mut lookup: F) -> Result<String>
+fn resolve_github_token_from<F, G>(mut lookup: F, gh_token: G) -> Result<String>
 where
     F: FnMut(&str) -> Option<String>,
+    G: FnOnce() -> Option<String>,
 {
     if let Some(token) = lookup("GH_TOKEN").filter(|t| !t.trim().is_empty()) {
         return Ok(token);
@@ -66,13 +69,32 @@ where
     if let Some(token) = lookup("GITHUB_TOKEN").filter(|t| !t.trim().is_empty()) {
         return Ok(token);
     }
+    if let Some(token) = gh_token().filter(|t| !t.trim().is_empty()) {
+        return Ok(token);
+    }
 
     anyhow::bail!(
-        "No GitHub token found in GH_TOKEN or GITHUB_TOKEN. \
-         Export one in your shell first, for example:\n\
+        "No GitHub token found. Authenticate the gh CLI with 'gh auth login', \
+         or export GH_TOKEN or GITHUB_TOKEN in your shell, for example:\n\
          export GH_TOKEN=ghp_your_token_here\n\
          then launch Sara again."
     )
+}
+
+/// Fall back to the gh CLI's stored token via `gh auth token`.
+///
+/// Returns `None` (rather than erroring) when gh is missing or unauthenticated,
+/// so the caller falls through to the explicit "no token found" error.
+fn gh_auth_token() -> Option<String> {
+    let out = std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if token.is_empty() { None } else { Some(token) }
 }
 
 /// Resolve the authenticated GitHub login via `gh api /user`.
@@ -379,33 +401,55 @@ mod tests {
 
     #[test]
     fn gh_token_takes_precedence_over_github_token() {
-        let token = resolve_github_token_from(|key| match key {
-            "GH_TOKEN" => Some("gh-token".into()),
-            "GITHUB_TOKEN" => Some("github-token".into()),
-            _ => None,
-        })
+        let token = resolve_github_token_from(
+            |key| match key {
+                "GH_TOKEN" => Some("gh-token".into()),
+                "GITHUB_TOKEN" => Some("github-token".into()),
+                _ => None,
+            },
+            || Some("gh-cli-token".into()),
+        )
         .unwrap();
         assert_eq!(token, "gh-token");
     }
 
     #[test]
     fn falls_back_to_github_token_when_gh_token_absent() {
-        let token = resolve_github_token_from(|key| match key {
-            "GH_TOKEN" => None,
-            "GITHUB_TOKEN" => Some("github-token".into()),
-            _ => None,
-        })
+        let token = resolve_github_token_from(
+            |key| match key {
+                "GH_TOKEN" => None,
+                "GITHUB_TOKEN" => Some("github-token".into()),
+                _ => None,
+            },
+            || Some("gh-cli-token".into()),
+        )
         .unwrap();
         assert_eq!(token, "github-token");
     }
 
     #[test]
-    fn fails_with_clear_error_when_no_token_in_env() {
-        let err = resolve_github_token_from(|_| None).unwrap_err();
+    fn falls_back_to_gh_auth_token_when_env_absent() {
+        let token = resolve_github_token_from(|_| None, || Some("gh-cli-token".into())).unwrap();
+        assert_eq!(token, "gh-cli-token");
+    }
+
+    #[test]
+    fn env_token_wins_over_gh_auth_token() {
+        let token = resolve_github_token_from(
+            |key| (key == "GH_TOKEN").then(|| "gh-token".into()),
+            || Some("gh-cli-token".into()),
+        )
+        .unwrap();
+        assert_eq!(token, "gh-token");
+    }
+
+    #[test]
+    fn fails_with_clear_error_when_no_token_anywhere() {
+        let err = resolve_github_token_from(|_| None, || None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("GH_TOKEN"), "{msg}");
         assert!(msg.contains("GITHUB_TOKEN"), "{msg}");
-        assert!(msg.contains("export GH_TOKEN"), "{msg}");
+        assert!(msg.contains("gh auth login"), "{msg}");
     }
 
     #[test]
