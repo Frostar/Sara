@@ -278,6 +278,24 @@ pub struct GithubProvenance {
     pub synced_by: Option<String>,
 }
 
+/// A single comment imported from a GitHub issue.
+/// Stored under the key `"github_comments"` inside `tasks.meta_json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubComment {
+    /// GitHub database id for the comment (stable deduplication key).
+    pub comment_id: i64,
+    /// Login of the comment author.
+    pub author: String,
+    /// Comment body text.
+    pub body: String,
+    /// Canonical HTML URL for the comment.
+    pub url: String,
+    /// When the comment was created on GitHub.
+    pub created_at: DateTime<Utc>,
+    /// When the comment was last updated on GitHub.
+    pub updated_at: DateTime<Utc>,
+}
+
 /// A code anchor pointing at a file (or symbol) relevant to a task.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
