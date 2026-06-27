@@ -231,6 +231,15 @@ fn apply_migrations(conn: &mut Connection) -> Result<()> {
                 ON task_ai_runs(task_uuid, created_at);",
         ),
         M::up(
+            // Non-secret GitHub sync identity fields for projects, plus a
+            // stable index to let project detection look up repos by full_name.
+            "ALTER TABLE projects ADD COLUMN github_repo        TEXT;
+             ALTER TABLE projects ADD COLUMN github_login       TEXT;
+             ALTER TABLE projects ADD COLUMN github_sync_scope  TEXT;
+             CREATE INDEX IF NOT EXISTS idx_projects_github_repo
+               ON projects(github_repo) WHERE github_repo IS NOT NULL;",
+        ),
+        M::up(
             // Lean on the SQLite engine: an FTS5 index for cross-task memory
             // kept in sync by triggers, and a JSON-producing view that
             // assembles the whole guide in one query (json1 is bundled).
@@ -1640,8 +1649,10 @@ pub fn upsert_project_seen(conn: &Connection, name: &str, path: Option<&str>) ->
 pub fn save_project_profile(conn: &Connection, project: &Project) -> Result<()> {
     let now = dt_to_str(&Utc::now());
     conn.execute(
-        "INSERT INTO projects (name, path, goal, stack, conventions, notes, initialized_at, last_seen)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?7)
+        "INSERT INTO projects (name, path, goal, stack, conventions, notes,
+                              initialized_at, last_seen,
+                              github_repo, github_login, github_sync_scope)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?7,?8,?9,?10)
          ON CONFLICT(name) DO UPDATE SET
            path          = COALESCE(?2, path),
            goal          = COALESCE(?3, goal),
@@ -1649,7 +1660,10 @@ pub fn save_project_profile(conn: &Connection, project: &Project) -> Result<()> 
            conventions   = COALESCE(?5, conventions),
            notes         = COALESCE(?6, notes),
            initialized_at = COALESCE(?7, initialized_at),
-           last_seen      = ?7",
+           last_seen      = ?7,
+           github_repo    = COALESCE(?8, github_repo),
+           github_login   = COALESCE(?9, github_login),
+           github_sync_scope = COALESCE(?10, github_sync_scope)",
         params![
             project.name,
             project.path,
@@ -1658,6 +1672,9 @@ pub fn save_project_profile(conn: &Connection, project: &Project) -> Result<()> 
             project.conventions,
             project.notes,
             now,
+            project.github_repo,
+            project.github_login,
+            project.github_sync_scope,
         ],
     )?;
     Ok(())
@@ -1665,7 +1682,8 @@ pub fn save_project_profile(conn: &Connection, project: &Project) -> Result<()> 
 
 pub fn get_project(conn: &Connection, name: &str) -> Result<Option<Project>> {
     let mut stmt = conn.prepare(
-        "SELECT name,path,goal,stack,conventions,notes,initialized_at,last_seen
+        "SELECT name,path,goal,stack,conventions,notes,initialized_at,last_seen,
+                github_repo,github_login,github_sync_scope
          FROM projects WHERE name=?1",
     )?;
     let mut rows = stmt.query_map([name], |row| {
@@ -1676,8 +1694,15 @@ pub fn get_project(conn: &Connection, name: &str) -> Result<Option<Project>> {
             stack: row.get(3)?,
             conventions: row.get(4)?,
             notes: row.get(5)?,
-            initialized_at: None,
-            last_seen: None,
+            initialized_at: row
+                .get::<_, Option<String>>(6)?
+                .and_then(|s| str_to_dt(&s).ok()),
+            last_seen: row
+                .get::<_, Option<String>>(7)?
+                .and_then(|s| str_to_dt(&s).ok()),
+            github_repo: row.get(8)?,
+            github_login: row.get(9)?,
+            github_sync_scope: row.get(10)?,
         })
     })?;
     Ok(rows.next().transpose()?)
@@ -1701,7 +1726,8 @@ pub fn project_names(conn: &Connection) -> Result<Vec<String>> {
 /// most-recently-seen one wins.
 pub fn get_project_by_path(conn: &Connection, path: &str) -> Result<Option<Project>> {
     let mut stmt = conn.prepare(
-        "SELECT name,path,goal,stack,conventions,notes,initialized_at,last_seen
+        "SELECT name,path,goal,stack,conventions,notes,initialized_at,last_seen,
+                github_repo,github_login,github_sync_scope
          FROM projects WHERE path=?1 ORDER BY last_seen DESC LIMIT 1",
     )?;
     let mut rows = stmt.query_map([path], |row| {
@@ -1712,8 +1738,15 @@ pub fn get_project_by_path(conn: &Connection, path: &str) -> Result<Option<Proje
             stack: row.get(3)?,
             conventions: row.get(4)?,
             notes: row.get(5)?,
-            initialized_at: None,
-            last_seen: None,
+            initialized_at: row
+                .get::<_, Option<String>>(6)?
+                .and_then(|s| str_to_dt(&s).ok()),
+            last_seen: row
+                .get::<_, Option<String>>(7)?
+                .and_then(|s| str_to_dt(&s).ok()),
+            github_repo: row.get(8)?,
+            github_login: row.get(9)?,
+            github_sync_scope: row.get(10)?,
         })
     })?;
     Ok(rows.next().transpose()?)
@@ -2129,6 +2162,27 @@ pub fn move_step(conn: &Connection, item_id: i64, up: bool) -> Result<bool> {
     }
     record_history(conn, &uuid, "checklist", None, Some("step reordered"))?;
     Ok(true)
+}
+
+/// Remove a step / acceptance criterion by its stable row id, recording history.
+/// Remaining items keep their `position`, so the 1-based display order stays
+/// consistent (later items simply shift up by one).
+pub fn delete_step(conn: &Connection, item_id: i64) -> Result<()> {
+    let (task_uuid_str, text, kind): (String, String, String) = conn.query_row(
+        "SELECT task_uuid, text, kind FROM task_checklist WHERE id=?1",
+        [item_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    conn.execute("DELETE FROM task_checklist WHERE id=?1", [item_id])?;
+    if let Ok(uuid) = Uuid::parse_str(&task_uuid_str) {
+        let label = if kind == STEP_KIND_ACCEPTANCE {
+            "acceptance"
+        } else {
+            "checklist"
+        };
+        record_history(conn, &uuid, label, Some(&text), Some("removed"))?;
+    }
+    Ok(())
 }
 
 pub fn toggle_checklist_item(conn: &Connection, item_id: i64) -> Result<bool> {
@@ -2972,7 +3026,215 @@ pub fn set_project_commands(conn: &Connection, name: &str, cmds: &ProjectCommand
     Ok(())
 }
 
-// ── dependency closure (recursive CTE) ───────────────────────────────────────
+// ── GitHub sync settings ─────────────────────────────────────────────────────
+
+/// Non-secret GitHub sync identity for a project.
+/// Contains a repo full_name, the authenticated login, and the sync scope.
+/// No PAT or credential is stored — authentication is always resolved at
+/// runtime (e.g. from `gh auth status` or the environment).
+#[derive(Debug, Clone, Default)]
+pub struct GithubSyncSettings {
+    /// GitHub full repository name (owner/repo).
+    pub repo: Option<String>,
+    /// GitHub username (login) associated with the sync, not a token.
+    pub login: Option<String>,
+    /// Comma-separated sync scopes, e.g. "issues" or "issues,prs".
+    pub scope: Option<String>,
+}
+
+/// Persist GitHub sync identity for a project.  Only the three non-secret
+/// fields (repo, login, scope) are written; no token is accepted.
+pub fn set_github_sync(conn: &Connection, project: &str, s: &GithubSyncSettings) -> Result<()> {
+    conn.execute(
+        "INSERT INTO projects (name, github_repo, github_login, github_sync_scope, last_seen)
+         VALUES (?1,?2,?3,?4,?5)
+         ON CONFLICT(name) DO UPDATE SET
+           github_repo       = COALESCE(?2, github_repo),
+           github_login      = COALESCE(?3, github_login),
+           github_sync_scope = COALESCE(?4, github_sync_scope),
+           last_seen         = ?5",
+        params![project, s.repo, s.login, s.scope, dt_to_str(&Utc::now()),],
+    )?;
+    Ok(())
+}
+
+/// Load GitHub sync identity for a project from the projects table.
+pub fn get_github_sync(conn: &Connection, project: &str) -> Result<GithubSyncSettings> {
+    conn.query_row(
+        "SELECT github_repo, github_login, github_sync_scope FROM projects WHERE name=?1",
+        [project],
+        |r| {
+            Ok(GithubSyncSettings {
+                repo: r.get(0)?,
+                login: r.get(1)?,
+                scope: r.get(2)?,
+            })
+        },
+    )
+    .optional()
+    .map(|o| o.unwrap_or_default())
+    .map_err(Into::into)
+}
+
+// ── GitHub issue provenance (stored in tasks.meta_json["github"]) ─────────────
+
+/// Read the GitHub provenance embedded in a task's `meta_json`, if any.
+pub fn get_github_provenance(
+    conn: &Connection,
+    task_uuid: &Uuid,
+) -> Result<Option<crate::model::GithubProvenance>> {
+    let fields = get_guide_fields(conn, task_uuid)?;
+    let Some(raw) = fields.meta_json else {
+        return Ok(None);
+    };
+    let obj: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+    let prov = obj
+        .get("github")
+        .and_then(|v| serde_json::from_value::<crate::model::GithubProvenance>(v.clone()).ok());
+    Ok(prov)
+}
+
+/// Find the existing task imported from a GitHub issue/PR by stable identity.
+pub fn find_github_task_uuid(
+    conn: &Connection,
+    repo: &str,
+    number: i64,
+    node_id: Option<&str>,
+) -> Result<Option<Uuid>> {
+    let mut sql = String::from(
+        "SELECT uuid FROM tasks
+         WHERE json_extract(meta_json, '$.github.repo') = ?1
+           AND (
+             json_extract(meta_json, '$.github.number') = ?2",
+    );
+    if node_id.is_some() {
+        sql.push_str(" OR json_extract(meta_json, '$.github.node_id') = ?3");
+    }
+    sql.push_str(
+        ")
+         LIMIT 1",
+    );
+
+    let row = if let Some(node_id) = node_id {
+        conn.query_row(&sql, params![repo, number, node_id], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?
+    } else {
+        conn.query_row(&sql, params![repo, number], |r| r.get::<_, String>(0))
+            .optional()?
+    };
+
+    Ok(row.and_then(|s| Uuid::parse_str(&s).ok()))
+}
+
+/// Write (or replace) the GitHub provenance inside a task's `meta_json`.
+/// Merges with any existing keys so other meta_json entries are preserved.
+/// No token or secret is accepted by the type — `GithubProvenance` contains
+/// only stable remote identity and sync metadata.
+pub fn set_github_provenance(
+    conn: &Connection,
+    task_uuid: &Uuid,
+    prov: &crate::model::GithubProvenance,
+) -> Result<()> {
+    let fields = get_guide_fields(conn, task_uuid)?;
+    let mut obj: serde_json::Map<String, serde_json::Value> = fields
+        .meta_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    obj.insert(
+        "github".to_string(),
+        serde_json::to_value(prov).unwrap_or(serde_json::Value::Null),
+    );
+    let json = serde_json::to_string(&obj)?;
+    set_meta_json(conn, task_uuid, &json)
+}
+
+// ── GitHub issue comments ─────────────────────────────────────────────────────
+
+/// Annotation `kind` used for comments imported from GitHub issues.
+pub const NOTE_KIND_GITHUB_COMMENT: &str = "github_comment";
+
+/// Insert a GitHub issue comment as an annotation if one with the same
+/// stable identity does not already exist.
+///
+/// Deduplication key: `target_kind = NOTE_KIND_GITHUB_COMMENT` AND
+/// `target_id = <comment_id>`.  The annotation is stored with the comment's
+/// `created_at` as its `entry` timestamp so ordering is chronologically
+/// faithful.  Returns `true` when a new annotation was inserted.
+pub fn upsert_github_comment_annotation(
+    conn: &Connection,
+    task_uuid: &Uuid,
+    comment: &crate::model::GithubComment,
+) -> Result<bool> {
+    let id_str = comment.comment_id.to_string();
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(1) FROM annotations
+             WHERE task_uuid=?1 AND target_kind=?2 AND target_id=?3",
+            params![task_uuid.to_string(), NOTE_KIND_GITHUB_COMMENT, &id_str],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)?;
+    if exists {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT INTO annotations
+           (task_uuid, text, entry, kind, author, target_kind, target_id, status, request_revision)
+         VALUES (?1,?2,?3,'comment',?4,?5,?6,'open',0)",
+        params![
+            task_uuid.to_string(),
+            comment.body,
+            dt_to_str(&comment.created_at),
+            comment.author,
+            NOTE_KIND_GITHUB_COMMENT,
+            id_str,
+        ],
+    )?;
+    Ok(true)
+}
+
+/// Replace the `"github_comments"` array inside a task's `meta_json`.
+/// Merges with any existing meta_json keys so other entries are preserved.
+/// Stores the full comment record (including `url` and `updated_at`) for
+/// complete round-trip fidelity.
+pub fn set_github_comments(
+    conn: &Connection,
+    task_uuid: &Uuid,
+    comments: &[crate::model::GithubComment],
+) -> Result<()> {
+    let fields = get_guide_fields(conn, task_uuid)?;
+    let mut obj: serde_json::Map<String, serde_json::Value> = fields
+        .meta_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    obj.insert(
+        "github_comments".to_string(),
+        serde_json::to_value(comments).unwrap_or(serde_json::Value::Array(vec![])),
+    );
+    let json = serde_json::to_string(&obj)?;
+    set_meta_json(conn, task_uuid, &json)
+}
+
+/// Read the `"github_comments"` array from a task's `meta_json`.
+pub fn get_github_comments(
+    conn: &Connection,
+    task_uuid: &Uuid,
+) -> Result<Vec<crate::model::GithubComment>> {
+    let fields = get_guide_fields(conn, task_uuid)?;
+    let Some(raw) = fields.meta_json else {
+        return Ok(Vec::new());
+    };
+    let obj: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+    let comments = obj
+        .get("github_comments")
+        .and_then(|v| serde_json::from_value::<Vec<crate::model::GithubComment>>(v.clone()).ok())
+        .unwrap_or_default();
+    Ok(comments)
+}
 
 /// Transitive set of tasks `task_uuid` depends on (its blockers, recursively),
 /// returned blockers-first so a briefing reads in execution order.
@@ -2997,7 +3259,7 @@ pub fn dependency_closure(conn: &Connection, task_uuid: &Uuid) -> Result<Vec<Uui
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use chrono::TimeZone as _;
     fn mem() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
@@ -3146,6 +3408,9 @@ mod tests {
                 notes: None,
                 initialized_at: None,
                 last_seen: None,
+                github_repo: None,
+                github_login: None,
+                github_sync_scope: None,
             },
         )
         .unwrap();
@@ -3434,6 +3699,39 @@ mod tests {
         let acc = get_steps(&conn, &task.uuid, STEP_KIND_ACCEPTANCE).unwrap();
         assert_eq!(acc.len(), 1);
         assert_eq!(acc[0].text, "it compiles");
+    }
+
+    #[test]
+    fn delete_step_removes_item_and_shifts_remaining() {
+        let conn = mem();
+        let task = seed_task(&conn);
+        for t in ["first", "second", "third"] {
+            add_step(&conn, &task.uuid, t, None, STEP_KIND_STEP, "human", None).unwrap();
+        }
+
+        // Remove the middle item by its stable id.
+        let mid = step_id_by_index(&conn, &task.uuid, STEP_KIND_STEP, 2).unwrap();
+        delete_step(&conn, mid).unwrap();
+
+        let steps = get_steps(&conn, &task.uuid, STEP_KIND_STEP).unwrap();
+        assert_eq!(
+            steps.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(),
+            vec!["first", "third"]
+        );
+        // The former #3 ("third") is now reachable at #2.
+        let now2 = step_id_by_index(&conn, &task.uuid, STEP_KIND_STEP, 2).unwrap();
+        assert_eq!(now2, steps[1].id);
+
+        // Removal is recorded in task history.
+        let removed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_history
+                 WHERE task_uuid=?1 AND field='checklist' AND new_value='removed'",
+                [task.uuid.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(removed, 1);
     }
 
     #[test]
@@ -3775,5 +4073,440 @@ mod tests {
         let conn = mem();
         let c = get_project_commands(&conn, "nope").unwrap();
         assert!(c.setup_cmd.is_none() && c.test_cmd.is_none());
+    }
+
+    // ── GitHub sync settings ─────────────────────────────────────────────────
+
+    #[test]
+    fn github_sync_settings_round_trip_through_project_storage() {
+        let conn = mem();
+        upsert_project_seen(&conn, "myrepo", Some("/home/u/myrepo")).unwrap();
+        set_github_sync(
+            &conn,
+            "myrepo",
+            &GithubSyncSettings {
+                repo: Some("acme/myrepo".into()),
+                login: Some("alice".into()),
+                scope: Some("issues".into()),
+            },
+        )
+        .unwrap();
+
+        let s = get_github_sync(&conn, "myrepo").unwrap();
+        assert_eq!(s.repo.as_deref(), Some("acme/myrepo"));
+        assert_eq!(s.login.as_deref(), Some("alice"));
+        assert_eq!(s.scope.as_deref(), Some("issues"));
+    }
+
+    #[test]
+    fn save_project_profile_persists_github_fields() {
+        let conn = mem();
+        save_project_profile(
+            &conn,
+            &crate::model::Project {
+                name: "myrepo".into(),
+                path: Some("/home/u/myrepo".into()),
+                goal: Some("g".into()),
+                stack: None,
+                conventions: None,
+                notes: None,
+                initialized_at: None,
+                last_seen: None,
+                github_repo: Some("acme/myrepo".into()),
+                github_login: Some("alice".into()),
+                github_sync_scope: Some("issues".into()),
+            },
+        )
+        .unwrap();
+
+        let project = get_project(&conn, "myrepo").unwrap().unwrap();
+        assert_eq!(project.github_repo.as_deref(), Some("acme/myrepo"));
+        assert_eq!(project.github_login.as_deref(), Some("alice"));
+        assert_eq!(project.github_sync_scope.as_deref(), Some("issues"));
+    }
+
+    #[test]
+    fn github_sync_partial_update_preserves_existing_fields() {
+        let conn = mem();
+        upsert_project_seen(&conn, "p", None).unwrap();
+        set_github_sync(
+            &conn,
+            "p",
+            &GithubSyncSettings {
+                repo: Some("org/p".into()),
+                login: Some("bob".into()),
+                scope: Some("issues".into()),
+            },
+        )
+        .unwrap();
+        // Update only scope — repo and login must be preserved (COALESCE).
+        set_github_sync(
+            &conn,
+            "p",
+            &GithubSyncSettings {
+                repo: None,
+                login: None,
+                scope: Some("issues,prs".into()),
+            },
+        )
+        .unwrap();
+
+        let s = get_github_sync(&conn, "p").unwrap();
+        assert_eq!(s.repo.as_deref(), Some("org/p"), "repo preserved");
+        assert_eq!(s.login.as_deref(), Some("bob"), "login preserved");
+        assert_eq!(s.scope.as_deref(), Some("issues,prs"), "scope updated");
+    }
+
+    #[test]
+    fn github_sync_no_secret_field_in_settings_struct() {
+        // login is a username, not a token — the type only accepts non-secret strings.
+        let s = GithubSyncSettings {
+            repo: Some("org/repo".into()),
+            login: Some("user".into()),
+            scope: Some("issues".into()),
+        };
+        assert!(
+            !s.login.as_deref().unwrap_or("").starts_with("ghp_"),
+            "login field should hold a username, not a PAT"
+        );
+    }
+
+    #[test]
+    fn project_detection_loads_github_sync_metadata_for_path() {
+        let conn = mem();
+        upsert_project_seen(&conn, "sara", Some("/home/u/Sara")).unwrap();
+        set_github_sync(
+            &conn,
+            "sara",
+            &GithubSyncSettings {
+                repo: Some("acme/sara".into()),
+                login: Some("alice".into()),
+                scope: Some("issues".into()),
+            },
+        )
+        .unwrap();
+
+        // Simulates what detect_current_project returns: the project loaded by path.
+        let project = get_project_by_path(&conn, "/home/u/Sara")
+            .unwrap()
+            .expect("project must be found by path");
+
+        assert_eq!(project.name, "sara");
+        assert_eq!(project.github_repo.as_deref(), Some("acme/sara"));
+        assert_eq!(project.github_login.as_deref(), Some("alice"));
+        assert_eq!(project.github_sync_scope.as_deref(), Some("issues"));
+    }
+
+    // ── GitHub issue provenance ──────────────────────────────────────────────
+
+    #[test]
+    fn github_provenance_round_trips_through_meta_json() {
+        let conn = mem();
+        let task = seed_task(&conn);
+
+        let prov = crate::model::GithubProvenance {
+            repo: "acme/widgets".into(),
+            issue_id: Some(42),
+            node_id: Some("NODE42".into()),
+            number: 99,
+            html_url: Some("https://github.com/acme/widgets/issues/99".into()),
+            title: Some("Fix widget".into()),
+            body: Some("body".into()),
+            state: Some("open".into()),
+            assignees: vec!["alice".into()],
+            creator: Some("alice".into()),
+            updated_at: Some(Utc::now()),
+            synced_at: Utc::now(),
+            synced_by: Some("alice".into()),
+        };
+        set_github_provenance(&conn, &task.uuid, &prov).unwrap();
+
+        let loaded = get_github_provenance(&conn, &task.uuid)
+            .unwrap()
+            .expect("provenance must be present");
+        assert_eq!(loaded.repo, "acme/widgets");
+        assert_eq!(loaded.number, 99);
+        assert_eq!(loaded.synced_by.as_deref(), Some("alice"));
+        assert_eq!(loaded.issue_id, Some(42));
+        assert_eq!(loaded.node_id.as_deref(), Some("NODE42"));
+    }
+
+    #[test]
+    fn github_provenance_merges_with_existing_meta_json_keys() {
+        let conn = mem();
+        let task = seed_task(&conn);
+
+        // Pre-populate meta_json with some other data.
+        set_meta_json(&conn, &task.uuid, r#"{"my_key":"keep_me"}"#).unwrap();
+
+        let prov = crate::model::GithubProvenance {
+            repo: "org/repo".into(),
+            issue_id: None,
+            node_id: None,
+            number: 1,
+            html_url: Some("https://github.com/org/repo/issues/1".into()),
+            title: Some("Issue".into()),
+            body: None,
+            state: Some("open".into()),
+            assignees: vec![],
+            creator: Some("alice".into()),
+            updated_at: Some(Utc::now()),
+            synced_at: Utc::now(),
+            synced_by: None,
+        };
+        set_github_provenance(&conn, &task.uuid, &prov).unwrap();
+
+        let raw = get_guide_fields(&conn, &task.uuid)
+            .unwrap()
+            .meta_json
+            .unwrap();
+        let obj: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        // Both the existing key and the new github key must be present.
+        assert_eq!(obj["my_key"], "keep_me");
+        assert_eq!(obj["github"]["repo"], "org/repo");
+        assert_eq!(obj["github"]["number"], 1);
+    }
+
+    #[test]
+    fn github_provenance_contains_no_secret_fields() {
+        // GithubProvenance only stores remote identity and sync metadata.
+        let prov = crate::model::GithubProvenance {
+            repo: "org/repo".into(),
+            issue_id: Some(7),
+            node_id: Some("NODE7".into()),
+            number: 5,
+            html_url: Some("https://github.com/org/repo/issues/5".into()),
+            title: Some("Issue".into()),
+            body: Some("body".into()),
+            state: Some("open".into()),
+            assignees: vec!["bob".into()],
+            creator: Some("bob".into()),
+            updated_at: Some(Utc::now()),
+            synced_at: Utc::now(),
+            synced_by: Some("bob".into()),
+        };
+        let serialized = serde_json::to_string(&prov).unwrap();
+        // Sanity: no "token" or "pat" key appears in the serialised provenance.
+        assert!(!serialized.to_lowercase().contains("token"));
+        assert!(!serialized.to_lowercase().contains(r#""pat""#));
+    }
+
+    #[test]
+    fn find_github_task_uuid_matches_repo_and_number_or_node_id() {
+        let conn = mem();
+        let task = seed_task(&conn);
+        let prov = crate::model::GithubProvenance {
+            repo: "acme/widgets".into(),
+            issue_id: Some(100),
+            node_id: Some("NODE100".into()),
+            number: 8,
+            html_url: Some("https://github.com/acme/widgets/issues/8".into()),
+            title: Some("Issue".into()),
+            body: None,
+            state: Some("open".into()),
+            assignees: vec![],
+            creator: Some("alice".into()),
+            updated_at: Some(Utc::now()),
+            synced_at: Utc::now(),
+            synced_by: Some("alice".into()),
+        };
+        set_github_provenance(&conn, &task.uuid, &prov).unwrap();
+
+        let by_number = find_github_task_uuid(&conn, "acme/widgets", 8, None)
+            .unwrap()
+            .expect("match by number");
+        assert_eq!(by_number, task.uuid);
+
+        let by_node = find_github_task_uuid(&conn, "acme/widgets", 999, Some("NODE100"))
+            .unwrap()
+            .expect("match by node id");
+        assert_eq!(by_node, task.uuid);
+    }
+
+    // ── GitHub issue comments ────────────────────────────────────────────────
+
+    fn make_gh_comment(id: i64, author: &str, body: &str) -> crate::model::GithubComment {
+        crate::model::GithubComment {
+            comment_id: id,
+            author: author.to_string(),
+            body: body.to_string(),
+            url: format!("https://github.com/a/b/issues/1#issuecomment-{id}"),
+            created_at: Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2026, 6, 2, 0, 0, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn github_comment_annotation_is_inserted_once() {
+        let conn = mem();
+        let task = seed_task(&conn);
+        let c = make_gh_comment(42, "alice", "Looks good");
+
+        let first = upsert_github_comment_annotation(&conn, &task.uuid, &c).unwrap();
+        assert!(first, "first insert should return true");
+
+        let second = upsert_github_comment_annotation(&conn, &task.uuid, &c).unwrap();
+        assert!(!second, "duplicate insert should return false");
+
+        let anns = get_annotations(&conn, &task.uuid).unwrap();
+        assert_eq!(anns.len(), 1, "only one annotation must exist");
+        assert_eq!(anns[0].author, "alice");
+        assert_eq!(anns[0].text, "Looks good");
+        assert_eq!(
+            anns[0].target_kind.as_deref(),
+            Some(NOTE_KIND_GITHUB_COMMENT)
+        );
+        assert_eq!(anns[0].target_id.as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn github_comment_kind_is_comment_for_info_visibility() {
+        // Comments must use kind="comment" so sara info shows them.
+        let conn = mem();
+        let task = seed_task(&conn);
+        let c = make_gh_comment(7, "bob", "Fix it");
+        upsert_github_comment_annotation(&conn, &task.uuid, &c).unwrap();
+
+        let anns = get_annotations(&conn, &task.uuid).unwrap();
+        assert_eq!(anns[0].kind, "comment");
+    }
+
+    #[test]
+    fn github_comment_annotation_uses_github_created_at_as_entry() {
+        use chrono::TimeZone;
+        let conn = mem();
+        let task = seed_task(&conn);
+        let created = Utc.with_ymd_and_hms(2025, 3, 15, 8, 0, 0).unwrap();
+        let mut c = make_gh_comment(10, "carol", "hello");
+        c.created_at = created;
+        upsert_github_comment_annotation(&conn, &task.uuid, &c).unwrap();
+
+        let anns = get_annotations(&conn, &task.uuid).unwrap();
+        assert_eq!(
+            anns[0].entry.timestamp(),
+            created.timestamp(),
+            "entry must equal the comment's created_at"
+        );
+    }
+
+    #[test]
+    fn github_comments_round_trip_through_meta_json() {
+        let conn = mem();
+        let task = seed_task(&conn);
+
+        let comments = vec![
+            make_gh_comment(1, "alice", "First comment"),
+            make_gh_comment(2, "bob", "Second comment"),
+        ];
+        set_github_comments(&conn, &task.uuid, &comments).unwrap();
+
+        let loaded = get_github_comments(&conn, &task.uuid).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].comment_id, 1);
+        assert_eq!(loaded[0].author, "alice");
+        assert_eq!(loaded[0].body, "First comment");
+        assert_eq!(
+            loaded[0].url,
+            "https://github.com/a/b/issues/1#issuecomment-1"
+        );
+        assert_eq!(loaded[1].comment_id, 2);
+    }
+
+    #[test]
+    fn github_comments_meta_json_preserves_other_keys() {
+        let conn = mem();
+        let task = seed_task(&conn);
+
+        set_meta_json(&conn, &task.uuid, r#"{"other_key":"keep_me"}"#).unwrap();
+        set_github_comments(&conn, &task.uuid, &[make_gh_comment(5, "dave", "hi")]).unwrap();
+
+        let raw = get_guide_fields(&conn, &task.uuid)
+            .unwrap()
+            .meta_json
+            .unwrap();
+        let obj: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            obj["other_key"], "keep_me",
+            "existing keys must be preserved"
+        );
+        assert_eq!(obj["github_comments"][0]["comment_id"], 5);
+    }
+
+    #[test]
+    fn repeated_set_github_comments_replaces_array() {
+        let conn = mem();
+        let task = seed_task(&conn);
+
+        set_github_comments(&conn, &task.uuid, &[make_gh_comment(1, "a", "old")]).unwrap();
+        set_github_comments(
+            &conn,
+            &task.uuid,
+            &[
+                make_gh_comment(1, "a", "old"),
+                make_gh_comment(2, "b", "new"),
+            ],
+        )
+        .unwrap();
+
+        let loaded = get_github_comments(&conn, &task.uuid).unwrap();
+        assert_eq!(loaded.len(), 2, "array is replaced with the latest set");
+    }
+
+    #[test]
+    fn upsert_github_comment_idempotent_across_multiple_calls() {
+        // Simulates two consecutive sync runs with the same comment list.
+        let conn = mem();
+        let task = seed_task(&conn);
+        let comments = vec![
+            make_gh_comment(100, "alice", "LGTM"),
+            make_gh_comment(101, "bob", "Please clarify"),
+        ];
+
+        // First sync
+        for c in &comments {
+            upsert_github_comment_annotation(&conn, &task.uuid, c).unwrap();
+        }
+        set_github_comments(&conn, &task.uuid, &comments).unwrap();
+
+        // Second sync (same data)
+        for c in &comments {
+            let inserted = upsert_github_comment_annotation(&conn, &task.uuid, c).unwrap();
+            assert!(
+                !inserted,
+                "second sync must not re-insert comment {}",
+                c.comment_id
+            );
+        }
+        set_github_comments(&conn, &task.uuid, &comments).unwrap();
+
+        // Exactly two annotations, no duplicates.
+        let anns = get_annotations(&conn, &task.uuid).unwrap();
+        assert_eq!(
+            anns.len(),
+            2,
+            "no duplicate annotations after repeated sync"
+        );
+
+        // Meta JSON also holds exactly two entries.
+        let meta = get_github_comments(&conn, &task.uuid).unwrap();
+        assert_eq!(meta.len(), 2);
+    }
+
+    #[test]
+    fn github_comment_metadata_preserves_url_and_updated_at() {
+        let conn = mem();
+        let task = seed_task(&conn);
+        let mut c = make_gh_comment(77, "eve", "test");
+        c.url = "https://github.com/org/repo/issues/3#issuecomment-77".to_string();
+        c.updated_at = Utc.with_ymd_and_hms(2026, 7, 1, 12, 0, 0).unwrap();
+
+        set_github_comments(&conn, &task.uuid, &[c.clone()]).unwrap();
+        let loaded = get_github_comments(&conn, &task.uuid).unwrap();
+
+        assert_eq!(
+            loaded[0].url,
+            "https://github.com/org/repo/issues/3#issuecomment-77"
+        );
+        assert_eq!(loaded[0].updated_at, c.updated_at);
     }
 }

@@ -70,14 +70,39 @@ fn run() -> Result<()> {
     }
 
     match cli.command {
-        Command::Init { name, goal, yes } => {
-            commands::init::run(&conn, &cfg, name.as_deref(), goal.as_deref(), yes)?;
+        Command::Init {
+            name,
+            goal,
+            stack,
+            conventions,
+            notes,
+            yes,
+        } => {
+            commands::init::run(
+                &conn,
+                &cfg,
+                name.as_deref(),
+                goal.as_deref(),
+                stack.as_deref(),
+                conventions.as_deref(),
+                notes.as_deref(),
+                yes,
+            )?;
         }
 
         Command::Project { action } => match action {
             ProjectAction::Init { name, goal, yes } => {
                 eprintln!("note: `sara project init` is deprecated — use `sara init` instead.");
-                commands::init::run(&conn, &cfg, name.as_deref(), goal.as_deref(), yes)?;
+                commands::init::run(
+                    &conn,
+                    &cfg,
+                    name.as_deref(),
+                    goal.as_deref(),
+                    None,
+                    None,
+                    None,
+                    yes,
+                )?;
             }
         },
 
@@ -108,11 +133,17 @@ fn run() -> Result<()> {
             )?;
         }
 
-        Command::Info { id, json } => {
+        Command::Info {
+            id,
+            json,
+            plain,
+            md,
+            history,
+        } => {
             if json {
                 commands::info::run_json(&conn, &cfg, &id)?;
             } else {
-                commands::info::run(&conn, &cfg, &id)?;
+                commands::info::run(&conn, &cfg, &id, plain, md, history)?;
             }
         }
 
@@ -186,8 +217,26 @@ fn run() -> Result<()> {
             commands::done::run(&conn, &cfg, &id, force)?;
         }
 
-        Command::Modify { id } => {
-            commands::modify::run(&conn, &cfg, &id)?;
+        Command::Modify {
+            id,
+            description,
+            priority,
+            due,
+            clear_due,
+            tag,
+            clear_tags,
+        } => {
+            commands::modify::run(
+                &conn,
+                &cfg,
+                &id,
+                description.as_deref(),
+                priority.as_deref(),
+                due.as_deref(),
+                clear_due,
+                &tag,
+                clear_tags,
+            )?;
         }
 
         Command::Move { id, project } => {
@@ -279,6 +328,9 @@ fn run() -> Result<()> {
             cli::StepAction::Undone { id, n, kind } => {
                 commands::guide::step_undone(&conn, &cfg, &id, n, kind.as_deref())?;
             }
+            cli::StepAction::Remove { id, n, kind } => {
+                commands::guide::step_remove(&conn, &cfg, &id, n, kind.as_deref())?;
+            }
         },
 
         Command::Verify { id, step, run } => {
@@ -329,6 +381,10 @@ fn run() -> Result<()> {
                     .map(|root| crate::project::project_name_from_root(&root))
             };
             commands::activity::run(&conn, proj.as_deref())?;
+        }
+
+        Command::Sync => {
+            commands::sync::run(&conn, &cfg)?;
         }
 
         Command::Paths => {

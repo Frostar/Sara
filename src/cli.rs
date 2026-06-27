@@ -24,6 +24,15 @@ pub enum Command {
         /// Set the project goal directly (skips prompt)
         #[arg(long)]
         goal: Option<String>,
+        /// Set the tech stack directly (overrides auto-detection)
+        #[arg(long)]
+        stack: Option<String>,
+        /// Set project conventions directly
+        #[arg(long)]
+        conventions: Option<String>,
+        /// Set project notes directly (skips prompt)
+        #[arg(long)]
+        notes: Option<String>,
         /// Accept all detected values non-interactively
         #[arg(short, long)]
         yes: bool,
@@ -75,6 +84,15 @@ pub enum Command {
         /// Emit the full guide as JSON (for agents/scripts)
         #[arg(long)]
         json: bool,
+        /// Force the readable text digest regardless of TTY (no TUI)
+        #[arg(long)]
+        plain: bool,
+        /// Emit a Markdown digest (description, steps, acceptance) for agent context or PR bodies
+        #[arg(long)]
+        md: bool,
+        /// Include the full History log in --plain/--md output (collapsed by default)
+        #[arg(long)]
+        history: bool,
     },
 
     /// Add a comment, note, or anchored feedback to a task
@@ -196,6 +214,24 @@ pub enum Command {
         /// Task id or uuid prefix
         #[arg(add = ArgValueCandidates::new(task_ids))]
         id: String,
+        /// Set the description non-interactively (skips the review-form TUI)
+        #[arg(long)]
+        description: Option<String>,
+        /// Set the priority (H/M/L) non-interactively
+        #[arg(long)]
+        priority: Option<String>,
+        /// Set the due date non-interactively (same formats as `add`)
+        #[arg(long)]
+        due: Option<String>,
+        /// Clear the due date
+        #[arg(long)]
+        clear_due: bool,
+        /// Replace tags (repeatable) non-interactively
+        #[arg(long, short)]
+        tag: Vec<String>,
+        /// Clear all tags
+        #[arg(long)]
+        clear_tags: bool,
     },
 
     /// Move a task to another project (non-interactive)
@@ -388,6 +424,9 @@ pub enum Command {
         all: bool,
     },
 
+    /// Sync open GitHub issues assigned to you for the current repo
+    Sync,
+
     /// Print config and data directory paths
     Paths,
 
@@ -432,6 +471,17 @@ pub enum StepAction {
     },
     /// Reopen step N
     Undone {
+        /// Task id or uuid prefix
+        id: String,
+        /// 1-based step number
+        n: usize,
+        /// Item kind: step (default) or acceptance
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Remove step N (a checklist item / acceptance criterion)
+    #[command(visible_alias = "rm")]
+    Remove {
         /// Task id or uuid prefix
         id: String,
         /// 1-based step number

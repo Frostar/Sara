@@ -227,6 +227,73 @@ pub struct Project {
     pub notes: Option<String>,
     pub initialized_at: Option<DateTime<Utc>>,
     pub last_seen: Option<DateTime<Utc>>,
+    /// GitHub full repository name (e.g. "owner/repo"). Never a secret.
+    pub github_repo: Option<String>,
+    /// GitHub login (username) used when syncing. Never a PAT or token.
+    pub github_login: Option<String>,
+    /// Comma-separated sync scopes, e.g. "issues" or "issues,prs".
+    pub github_sync_scope: Option<String>,
+}
+
+/// Non-secret provenance metadata for a task imported from a GitHub issue or PR.
+/// Stored under the key `"github"` inside `tasks.meta_json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubProvenance {
+    /// Full repository name (owner/repo).
+    pub repo: String,
+    /// GitHub database id for the issue or PR.
+    #[serde(default)]
+    pub issue_id: Option<i64>,
+    /// GitHub node id for the issue or PR.
+    #[serde(default)]
+    pub node_id: Option<String>,
+    /// Issue or PR number on GitHub.
+    pub number: i64,
+    /// Canonical HTML URL for the remote issue.
+    #[serde(default)]
+    pub html_url: Option<String>,
+    /// Remote issue title as imported from GitHub.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Remote issue body as imported from GitHub.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Remote issue state ("open" / "closed").
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Assignee logins attached to the remote issue.
+    #[serde(default)]
+    pub assignees: Vec<String>,
+    /// Remote issue creator login.
+    #[serde(default)]
+    pub creator: Option<String>,
+    /// RFC3339 timestamp when the remote issue was last updated.
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
+    /// RFC3339 timestamp when this task was synced.
+    #[serde(alias = "imported_at")]
+    pub synced_at: DateTime<Utc>,
+    /// GitHub login of the user who performed the sync (not a token).
+    #[serde(alias = "imported_by")]
+    pub synced_by: Option<String>,
+}
+
+/// A single comment imported from a GitHub issue.
+/// Stored under the key `"github_comments"` inside `tasks.meta_json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubComment {
+    /// GitHub database id for the comment (stable deduplication key).
+    pub comment_id: i64,
+    /// Login of the comment author.
+    pub author: String,
+    /// Comment body text.
+    pub body: String,
+    /// Canonical HTML URL for the comment.
+    pub url: String,
+    /// When the comment was created on GitHub.
+    pub created_at: DateTime<Utc>,
+    /// When the comment was last updated on GitHub.
+    pub updated_at: DateTime<Utc>,
 }
 
 /// A code anchor pointing at a file (or symbol) relevant to a task.
