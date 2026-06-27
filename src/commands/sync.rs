@@ -235,17 +235,14 @@ fn fetch_issue_comments(
     repo: &str,
     issue_number: i64,
 ) -> Result<Vec<GhComment>> {
-    let endpoint =
-        format!("/repos/{owner}/{repo}/issues/{issue_number}/comments?per_page=100");
+    let endpoint = format!("/repos/{owner}/{repo}/issues/{issue_number}/comments?per_page=100");
 
     let out = std::process::Command::new("gh")
         .env("GH_TOKEN", token)
         .args(["api", "--paginate", &endpoint])
         .output()
         .with_context(|| {
-            format!(
-                "failed to call gh api for comments on {owner}/{repo}#{issue_number}"
-            )
+            format!("failed to call gh api for comments on {owner}/{repo}#{issue_number}")
         })?;
 
     if !out.status.success() {
@@ -475,16 +472,13 @@ mod tests {
         let c: GhComment = serde_json::from_str(json).unwrap();
         assert_eq!(c.id, 999);
         assert_eq!(c.body.as_deref(), Some("Great issue!"));
-        assert_eq!(c.html_url, "https://github.com/a/b/issues/7#issuecomment-999");
+        assert_eq!(
+            c.html_url,
+            "https://github.com/a/b/issues/7#issuecomment-999"
+        );
         assert_eq!(c.user.login, "bob");
-        assert_eq!(
-            c.created_at.to_rfc3339(),
-            "2026-06-01T09:00:00+00:00"
-        );
-        assert_eq!(
-            c.updated_at.to_rfc3339(),
-            "2026-06-02T10:30:00+00:00"
-        );
+        assert_eq!(c.created_at.to_rfc3339(), "2026-06-01T09:00:00+00:00");
+        assert_eq!(c.updated_at.to_rfc3339(), "2026-06-02T10:30:00+00:00");
     }
 
     #[test]

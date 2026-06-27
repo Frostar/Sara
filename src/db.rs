@@ -3187,9 +3187,7 @@ pub fn get_github_comments(
     let obj: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
     let comments = obj
         .get("github_comments")
-        .and_then(|v| {
-            serde_json::from_value::<Vec<crate::model::GithubComment>>(v.clone()).ok()
-        })
+        .and_then(|v| serde_json::from_value::<Vec<crate::model::GithubComment>>(v.clone()).ok())
         .unwrap_or_default();
     Ok(comments)
 }
@@ -4259,7 +4257,10 @@ mod tests {
         assert_eq!(anns.len(), 1, "only one annotation must exist");
         assert_eq!(anns[0].author, "alice");
         assert_eq!(anns[0].text, "Looks good");
-        assert_eq!(anns[0].target_kind.as_deref(), Some(NOTE_KIND_GITHUB_COMMENT));
+        assert_eq!(
+            anns[0].target_kind.as_deref(),
+            Some(NOTE_KIND_GITHUB_COMMENT)
+        );
         assert_eq!(anns[0].target_id.as_deref(), Some("42"));
     }
 
@@ -4329,7 +4330,10 @@ mod tests {
             .meta_json
             .unwrap();
         let obj: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(obj["other_key"], "keep_me", "existing keys must be preserved");
+        assert_eq!(
+            obj["other_key"], "keep_me",
+            "existing keys must be preserved"
+        );
         assert_eq!(obj["github_comments"][0]["comment_id"], 5);
     }
 
@@ -4372,13 +4376,21 @@ mod tests {
         // Second sync (same data)
         for c in &comments {
             let inserted = upsert_github_comment_annotation(&conn, &task.uuid, c).unwrap();
-            assert!(!inserted, "second sync must not re-insert comment {}", c.comment_id);
+            assert!(
+                !inserted,
+                "second sync must not re-insert comment {}",
+                c.comment_id
+            );
         }
         set_github_comments(&conn, &task.uuid, &comments).unwrap();
 
         // Exactly two annotations, no duplicates.
         let anns = get_annotations(&conn, &task.uuid).unwrap();
-        assert_eq!(anns.len(), 2, "no duplicate annotations after repeated sync");
+        assert_eq!(
+            anns.len(),
+            2,
+            "no duplicate annotations after repeated sync"
+        );
 
         // Meta JSON also holds exactly two entries.
         let meta = get_github_comments(&conn, &task.uuid).unwrap();

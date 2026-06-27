@@ -299,7 +299,10 @@ mod tests {
         make_git_repo_with_remote(&dir, Some("https://gitlab.com/user/repo.git"));
         let err = github_repo_from_remote(&dir).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("not a recognised GitHub remote"), "unexpected: {msg}");
+        assert!(
+            msg.contains("not a recognised GitHub remote"),
+            "unexpected: {msg}"
+        );
         assert!(msg.contains("Sara expects"), "unexpected: {msg}");
     }
 }
