@@ -84,6 +84,15 @@ pub enum Command {
         /// Emit the full guide as JSON (for agents/scripts)
         #[arg(long)]
         json: bool,
+        /// Force the readable text digest regardless of TTY (no TUI)
+        #[arg(long)]
+        plain: bool,
+        /// Emit a Markdown digest (description, steps, acceptance) for agent context or PR bodies
+        #[arg(long)]
+        md: bool,
+        /// Include the full History log in --plain/--md output (collapsed by default)
+        #[arg(long)]
+        history: bool,
     },
 
     /// Add a comment, note, or anchored feedback to a task
@@ -415,6 +424,9 @@ pub enum Command {
         all: bool,
     },
 
+    /// Sync open GitHub issues assigned to you for the current repo
+    Sync,
+
     /// Print config and data directory paths
     Paths,
 
@@ -459,6 +471,17 @@ pub enum StepAction {
     },
     /// Reopen step N
     Undone {
+        /// Task id or uuid prefix
+        id: String,
+        /// 1-based step number
+        n: usize,
+        /// Item kind: step (default) or acceptance
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Remove step N (a checklist item / acceptance criterion)
+    #[command(visible_alias = "rm")]
+    Remove {
         /// Task id or uuid prefix
         id: String,
         /// 1-based step number

@@ -254,6 +254,29 @@ the set — adding and removing edges — and rejects self-references and cycles
 with an inline error. The change is reflected immediately in the "Blocked by"
 section and the History panel.
 
+### Non-interactive & agent-friendly output
+
+`sara info` detects whether stdout is a terminal: in a TTY it opens the
+interactive view; when piped it prints a readable plain-text digest instead.
+You can force a specific format regardless of TTY:
+
+| Flag        | Output                                                                 |
+|-------------|------------------------------------------------------------------------|
+| `--md`      | **Markdown digest** — LLM-native: `##` headings and `- [ ]`/`- [x]` checkboxes for steps & acceptance. Ideal for agent context or a PR body. |
+| `--plain`   | The readable plain-text digest, forced (no TUI).                       |
+| `--json`    | The full structured guide (every field) for scripts.                   |
+| `--history` | Include the full History log in `--plain`/`--md` (collapsed to a one-line summary by default to keep output lean). |
+
+```bash
+sara info 7 --md                 # paste-ready Markdown for an agent / PR
+sara info 7 --md --history       # …including the full change log
+sara info 7 --plain              # readable text, History collapsed
+sara info 7 --json | jq .steps   # structured access
+```
+
+The Markdown digest is the recommended way to feed a task to an AI agent: it's
+stable, omits the unbounded History log by default, and needs no reshaping.
+
 ---
 
 ## Working with tasks
@@ -323,9 +346,14 @@ Break a task into sub-steps without creating separate tasks:
 ```bash
 sara check 1 "draft the schema"
 sara check 1 "write the migration"
+
+sara step done 1 1                  # tick step 1 (records the commit, if any)
+sara step undone 1 1               # reopen it
+sara step remove 1 2              # delete step 2 (alias: sara step rm); later steps shift up
 ```
 
-Toggle items with `Space` in `sara info`.
+Add `--kind acceptance` to any `sara step …` command to act on the task's
+acceptance criteria instead of its steps. Toggle items with `Space` in `sara info`.
 
 ### Notes, comments & links
 
@@ -557,13 +585,14 @@ Run `sara paths` to see the exact locations on your machine.
 | `sara init`                        | Initialize/update the current folder as a project (`--goal`, `--stack`, `--conventions`, `--notes`, `-y`) |
 | `sara add <desc> [tokens]`         | Add a task (`--yes`, `-p`, `--priority`, `-t`, `--every`) |
 | `sara list`                        | List tasks (`-a` all, `-p`/`--project <name>`)           |
-| `sara info <id>`                   | Open the interactive detail view                         |
 | `sara modify <id>`                 | Edit via the review form, or set fields non-interactively (`--description`, `--priority`, `--due`/`--clear-due`, `--tag`/`--clear-tags`) |
+| `sara info <id>`                   | Open the interactive detail view (`--md`/`--plain`/`--json`, `--history`) |
 | `sara done <id>`                   | Complete a task (`--force` if blocked)                   |
 | `sara delete <id>`                 | Soft-delete a task (`-y` to skip confirmation)           |
 | `sara start <id>` / `sara stop <id>`| Start / stop the timer                                  |
 | `sara dep <id> on\|off\|list`       | Manage dependencies                                     |
 | `sara check <id> <text>`           | Add a checklist item                                     |
+| `sara step done\|undone\|remove <id> <n>` | Tick / reopen / delete step n (`--kind acceptance`)|
 | `sara annotate <id> <text>`        | Add a comment (alias `comment`); `sara denotate <n>` removes |
 | `sara link <id> <url>`             | Add a link; `sara unlink <n>` removes                    |
 | `sara attach <id> <path>`          | Attach a file path (alias `pr`)                          |

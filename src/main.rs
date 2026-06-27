@@ -133,11 +133,17 @@ fn run() -> Result<()> {
             )?;
         }
 
-        Command::Info { id, json } => {
+        Command::Info {
+            id,
+            json,
+            plain,
+            md,
+            history,
+        } => {
             if json {
                 commands::info::run_json(&conn, &cfg, &id)?;
             } else {
-                commands::info::run(&conn, &cfg, &id)?;
+                commands::info::run(&conn, &cfg, &id, plain, md, history)?;
             }
         }
 
@@ -322,6 +328,9 @@ fn run() -> Result<()> {
             cli::StepAction::Undone { id, n, kind } => {
                 commands::guide::step_undone(&conn, &cfg, &id, n, kind.as_deref())?;
             }
+            cli::StepAction::Remove { id, n, kind } => {
+                commands::guide::step_remove(&conn, &cfg, &id, n, kind.as_deref())?;
+            }
         },
 
         Command::Verify { id, step, run } => {
@@ -372,6 +381,10 @@ fn run() -> Result<()> {
                     .map(|root| crate::project::project_name_from_root(&root))
             };
             commands::activity::run(&conn, proj.as_deref())?;
+        }
+
+        Command::Sync => {
+            commands::sync::run(&conn, &cfg)?;
         }
 
         Command::Paths => {
