@@ -328,6 +328,47 @@ fn apply_migrations(conn: &mut Connection) -> Result<()> {
              ) AS guide_json
              FROM tasks t;",
         ),
+        // Backfill the GitHub sync columns on databases that upgraded across the
+        // point where the earlier `ALTER TABLE projects ADD COLUMN github_*`
+        // migration was (incorrectly) inserted mid-list. rusqlite_migration only
+        // tracks a single `user_version` watermark, so a database already past
+        // that index silently skips the inserted migration forever, leaving the
+        // schema without the columns the code SELECTs. This migration is appended
+        // (a fresh, higher index) so every existing database re-runs it, and the
+        // hook adds each column only when missing so it is a no-op on databases
+        // that already have them (fresh installs, or ones manually repaired).
+        M::up_with_hook(
+            "",
+            |tx: &rusqlite::Transaction| -> rusqlite_migration::HookResult {
+                let existing: std::collections::HashSet<String> = tx
+                    .prepare("PRAGMA table_info(projects)")?
+                    .query_map([], |r| r.get::<_, String>(1))?
+                    .collect::<rusqlite::Result<_>>()?;
+                for (col, ddl) in [
+                    (
+                        "github_repo",
+                        "ALTER TABLE projects ADD COLUMN github_repo TEXT",
+                    ),
+                    (
+                        "github_login",
+                        "ALTER TABLE projects ADD COLUMN github_login TEXT",
+                    ),
+                    (
+                        "github_sync_scope",
+                        "ALTER TABLE projects ADD COLUMN github_sync_scope TEXT",
+                    ),
+                ] {
+                    if !existing.contains(col) {
+                        tx.execute_batch(ddl)?;
+                    }
+                }
+                tx.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_projects_github_repo \
+                     ON projects(github_repo) WHERE github_repo IS NOT NULL;",
+                )?;
+                Ok(())
+            },
+        ),
     ]);
     migrations
         .to_latest(conn)
@@ -3221,6 +3262,62 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         apply_migrations(&mut conn).unwrap();
         conn
+    }
+
+    fn projects_columns(conn: &Connection) -> std::collections::HashSet<String> {
+        conn.prepare("PRAGMA table_info(projects)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn fresh_database_has_github_sync_columns() {
+        let conn = mem();
+        let cols = projects_columns(&conn);
+        for col in ["github_repo", "github_login", "github_sync_scope"] {
+            assert!(cols.contains(col), "fresh DB missing column {col}");
+        }
+    }
+
+    #[test]
+    fn appended_migration_backfills_github_columns_on_upgraded_db() {
+        // Reproduce a database that upgraded across the point where the GitHub
+        // sync columns migration was inserted mid-list: the projects table
+        // predates those columns, yet user_version is already at the old list
+        // length (14), so rusqlite_migration would otherwise skip the inserted
+        // migration forever and the schema would stay broken.
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (
+                name TEXT PRIMARY KEY, path TEXT, goal TEXT, stack TEXT,
+                conventions TEXT, notes TEXT, initialized_at TEXT, last_seen TEXT,
+                setup_cmd TEXT, test_cmd TEXT, lint_cmd TEXT, run_cmd TEXT
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (name, path) VALUES ('demo', '/tmp/demo')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 14_i64).unwrap();
+        assert!(!projects_columns(&conn).contains("github_repo"));
+
+        apply_migrations(&mut conn).unwrap();
+
+        let cols = projects_columns(&conn);
+        for col in ["github_repo", "github_login", "github_sync_scope"] {
+            assert!(cols.contains(col), "backfill missing column {col}");
+        }
+        // Existing rows survive the backfill and re-running is a no-op.
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        apply_migrations(&mut conn).unwrap();
     }
 
     fn seed_task(conn: &Connection) -> Task {
